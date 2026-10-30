@@ -245,3 +245,7 @@ label.field[hidden] { display: none; }
 .album.locked { opacity: .5; }
 .album .cover { position: relative; }
 .album.picked .tick { background: var(--primary); }
+.meta .eye-toggle { cursor: pointer; padding: 3px; margin: -3px; border-radius: 6px; color: #16834a; }
+.meta .eye-toggle.off { color: #b4234a; }
+.meta .eye-toggle:hover, .meta .eye-toggle:focus-visible { background: #eef2f7; outline: none; }
+.meta .eye-toggle svg { width: 18px; height: 18px; }

@@ -6,7 +6,7 @@ const state = { selecting: false, selected: new Set(), user: null, list: { q: ""
 
 // Feather icons (MIT), served locally without a third-party runtime dependency.
 const icon = (name) => `<svg aria-hidden="true"><use href="/icons.svg#${name}"/></svg>`;
-const ICON = Object.fromEntries(Object.entries({ search: "search", image: "image", calendar: "calendar", user: "user", plus: "plus", upload: "upload", edit: "edit-2", trash: "trash-2", star: "star", back: "chevron-left", login: "log-in", logout: "log-out", arrow: "arrow-right", download: "download", select: "check-square", folder: "folder" }).map(([key, name]) => [key, icon(name)]));
+const ICON = Object.fromEntries(Object.entries({ search: "search", image: "image", calendar: "calendar", user: "user", plus: "plus", upload: "upload", edit: "edit-2", trash: "trash-2", star: "star", back: "chevron-left", login: "log-in", logout: "log-out", arrow: "arrow-right", download: "download", select: "check-square", folder: "folder", eye: "eye", eyeOff: "eye-off" }).map(([key, name]) => [key, icon(name)]));
 
 const MONTHS = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
 const thaiDate = (iso) => { const [y, m, d] = String(iso).split("-").map(Number); return `${d} ${MONTHS[m - 1]} ${y + 543}`; };
@@ -234,7 +234,10 @@ async function loadSidebar(append = false) {
 
 // ---------- หน้ารายการงาน ----------
 function albumMeta(a) {
-  return `<div class="meta"><span>${ICON.calendar}${thaiDate(a.event_date)}</span><span>${ICON.image}${a.photo_count} ภาพ</span>${audienceBadge(a)}</div>`;
+  const open = (a.audience || "public") === "public";
+  const eye = canManageListAlbum(a) && !state.list.selecting
+    ? `<span class="eye-toggle${open ? "" : " off"}" role="button" tabindex="0" data-eye="${a.id}" aria-pressed="${!open}" title="${open ? "สาธารณะ: กดเพื่อให้เห็นเฉพาะบุคลากร" : `${AUDIENCE_SHORT[a.audience]}: กดเพื่อเปิดเป็นสาธารณะ`}" aria-label="${open ? "ซ่อนจากสาธารณะ" : "เปิดเป็นสาธารณะ"}">${open ? ICON.eye : ICON.eyeOff}</span>` : "";
+  return `<div class="meta"><span>${ICON.calendar}${thaiDate(a.event_date)}</span><span>${ICON.image}${a.photo_count} ภาพ</span>${eye}${audienceBadge(a)}</div>`;
 }
 const canManageListAlbum = (a) => state.user && (state.user.is_admin || state.user.id === a.created_by);
 function albumCard(a) {
@@ -289,7 +292,21 @@ function renderList() {
     b.innerHTML = `${ICON.select} ${state.list.selecting ? "เลิกเลือก" : "เลือกหลายอัลบั้ม"}`;
     renderListBody();
   };
+  const toggleEye = async (btn) => {
+    const id = Number(btn.dataset.eye), a = state.list.albums.find((x) => x.id === id);
+    if (!a || btn.dataset.busy) return;
+    const next = (a.audience || "public") === "public" ? "staff" : "public";
+    btn.dataset.busy = "1";
+    try { await api(`/api/albums/${id}`, { method: "PATCH", body: { audience: next } }); a.audience = next; renderListBody(); $(`[data-eye="${id}"]`)?.focus(); toast(`ตั้งเป็น “${AUDIENCE_SHORT[next]}” แล้ว`); }
+    catch (x) { delete btn.dataset.busy; toast(x.message, true); }
+  };
+  $("#listBody").addEventListener("keydown", (e) => {
+    const btn = e.target.closest?.("[data-eye]");
+    if (btn && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); e.stopPropagation(); toggleEye(btn); }
+  });
   $("#listBody").addEventListener("click", async (e) => {
+    const eyeBtn = e.target.closest("[data-eye]");
+    if (eyeBtn) { e.preventDefault(); e.stopPropagation(); return toggleEye(eyeBtn); }
     if (!state.list.selecting) return;
     const card = e.target.closest("[data-album]");
     if (card) {
