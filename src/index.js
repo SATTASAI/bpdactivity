@@ -90,6 +90,8 @@ export async function ensureSchema(env) {
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS activity_login_failures (
       email TEXT NOT NULL, ip TEXT, at TEXT NOT NULL DEFAULT (datetime('now')))`),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS activity_sync_state (key TEXT PRIMARY KEY, value TEXT)"),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS activity_sso_codes (
+      code_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, session_version INTEGER NOT NULL, expires_at INTEGER NOT NULL)`),
   ]);
   await migrateV1(env);
   const albumCols = ((await env.DB.prepare("PRAGMA table_info(activity_albums)").all()).results || []).map((c) => c.name);
@@ -538,6 +540,8 @@ async function handle(request, env, ctx) {
   const zip = path.match(/^\/dl\/album\/(\d+)\/(\d+)\.zip$/);
   if (zip && method === "GET") { await ensureSchema(env); return downloadZip(env, Number(zip[1]), Number(zip[2]), await currentUser(request, env)); }
 
+  if (path === "/sso" && method === "GET") { await ensureSchema(env); return ssoLogin(url, env); }
+
   if (!path.startsWith("/api/")) {
     const res = await env.ASSETS.fetch(request);
     const out = new Response(res.body, res);
@@ -561,6 +565,26 @@ async function handle(request, env, ctx) {
     return out;
   }
   return response;
+}
+
+// เข้าจากเมนู system: แลกรหัสใช้ครั้งเดียว (system สร้างใน activity_sso_codes) เป็น session ของ activity
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function ssoLogin(url, env) {
+  const home = new Response(null, { status: 302, headers: { Location: "/", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
+  const code = String(url.searchParams.get("code") || "");
+  if (!/^[0-9a-f]{64}$/.test(code)) return home;
+  const row = await env.DB.prepare("DELETE FROM activity_sso_codes WHERE code_hash = ? AND expires_at >= ? RETURNING user_id, session_version")
+    .bind(await sha256Hex(code), Math.floor(Date.now() / 1000)).first();
+  if (!row) return home;
+  const user = await env.DB.prepare("SELECT id, role, status, session_version, deleted_at FROM users WHERE id = ?").bind(row.user_id).first();
+  if (!canUse(user) || await isViewerAccount(env, user.id)) return home;
+  if (user.session_version != null && Number(row.session_version) !== Number(user.session_version)) return home;
+  const token = await signJWT({ sub: user.id, sv: user.session_version ?? 1, app: "activity" }, await jwtSecret(env));
+  home.headers.append("Set-Cookie", buildSessionCookie(token));
+  return home;
 }
 
 const SESSION_REFRESH_SECONDS = 60 * 60 * 24;

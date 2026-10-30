@@ -285,3 +285,17 @@ test("session ต่ออายุอัตโนมัติ", async () => {
   assert.match(res.headers.get("Set-Cookie") || "", /bpd_activity=.+Max-Age=31536000/);
   assert.equal((await call("/api/me", { cookie: res.headers.get("Set-Cookie").split(";")[0] })).res.headers.get("Set-Cookie"), null);
 });
+
+test("SSO จาก system: รหัสใช้ครั้งเดียว", async () => {
+  const { createHash, randomBytes } = await import("node:crypto");
+  await call("/api/me");
+  const code = randomBytes(32).toString("hex"), uid = sql.prepare("SELECT id FROM users WHERE email = 't1@x.th'").get().id;
+  const sv = sql.prepare("SELECT session_version FROM users WHERE id = ?").get(uid).session_version;
+  sql.prepare("INSERT INTO activity_sso_codes VALUES (?, ?, ?, ?)").run(createHash("sha256").update(code).digest("hex"), uid, sv, Math.floor(Date.now() / 1000) + 60);
+  const r1 = await handle(new Request(`${O}/sso?code=${code}`), env, ctx);
+  assert.equal(r1.status, 302);
+  const c = (r1.headers.get("Set-Cookie") || "").split(";")[0];
+  assert.match(c, /^bpd_activity=/);
+  assert.equal((await call("/api/me", { cookie: c })).data.user.full_name, "ครูหนึ่ง");
+  assert.equal((await handle(new Request(`${O}/sso?code=${code}`), env, ctx)).headers.get("Set-Cookie"), null);
+});
