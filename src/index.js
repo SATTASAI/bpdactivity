@@ -55,6 +55,7 @@ const PHOTOS_DDL = (name) => `CREATE TABLE IF NOT EXISTS ${name} (
   file_size INTEGER,
   width INTEGER,
   height INTEGER,
+  rotation INTEGER,
   uploaded_by INTEGER,
   source TEXT NOT NULL DEFAULT 'web',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -96,10 +97,15 @@ export async function ensureSchema(env) {
   await migrateV1(env);
   const albumCols = ((await env.DB.prepare("PRAGMA table_info(activity_albums)").all()).results || []).map((c) => c.name);
   if (!albumCols.includes("description")) await env.DB.prepare("ALTER TABLE activity_albums ADD COLUMN description TEXT").run();
+  const photoCols = ((await env.DB.prepare("PRAGMA table_info(activity_photos)").all()).results || []).map((c) => c.name);
+  if (!photoCols.includes("rotation")) await env.DB.prepare("ALTER TABLE activity_photos ADD COLUMN rotation INTEGER").run();
   if (!albumCols.includes("audience")) await env.DB.prepare("ALTER TABLE activity_albums ADD COLUMN audience TEXT NOT NULL DEFAULT 'public'").run();
   // ครั้งเดียว: ให้ซิงก์ตรวจทุกอัลบั้มใหม่ เพื่อเก็บขนาดภาพ (กว้าง/สูงตามการหมุนภาพ) ไว้เลือกภาพปก
   const flag = await env.DB.prepare("INSERT OR IGNORE INTO activity_sync_state (key, value) VALUES ('dims_backfill_v1', datetime('now'))").run();
   if (Number(flag.meta?.changes) > 0) await env.DB.prepare("UPDATE activity_albums SET synced_at = NULL").run();
+  // ครั้งเดียว: เก็บค่าการหมุนภาพ (rotation) ของภาพเดิม ไว้แก้ภาพย่อกลับหัว
+  const rotFlag = await env.DB.prepare("INSERT OR IGNORE INTO activity_sync_state (key, value) VALUES ('rotation_backfill_v1', datetime('now'))").run();
+  if (Number(rotFlag.meta?.changes) > 0) await env.DB.prepare("UPDATE activity_albums SET synced_at = NULL").run();
   await env.DB.batch([
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_activity_albums_date ON activity_albums(deleted_at, event_date, id)"),
     env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_albums_folder ON activity_albums(drive_folder_id)"),
@@ -348,9 +354,10 @@ async function uploadPhoto(request, env, user, albumId) {
   const name = safeFileName(file.name, mimeType);
   const uploaded = await drive.uploadFile(env, album.drive_folder_id, name, mimeType, new Uint8Array(await file.arrayBuffer()));
   const [dimW, dimH] = displayDims(uploaded.imageMediaMetadata);
-  await env.DB.prepare(`INSERT INTO activity_photos (album_id, drive_file_id, drive_parent_id, file_name, mime_type, file_size, width, height, uploaded_by, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'web') ON CONFLICT(drive_file_id) DO UPDATE SET uploaded_by = excluded.uploaded_by, source = 'web'`)
-    .bind(albumId, uploaded.id, album.drive_folder_id, name, mimeType, file.size, dimW, dimH, user.id).run();
+  const rotation = Number(uploaded.imageMediaMetadata?.rotation) || 0;
+  await env.DB.prepare(`INSERT INTO activity_photos (album_id, drive_file_id, drive_parent_id, file_name, mime_type, file_size, width, height, rotation, uploaded_by, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'web') ON CONFLICT(drive_file_id) DO UPDATE SET uploaded_by = excluded.uploaded_by, source = 'web'`)
+    .bind(albumId, uploaded.id, album.drive_folder_id, name, mimeType, file.size, dimW, dimH, rotation, user.id).run();
   const row = await env.DB.prepare("SELECT id FROM activity_photos WHERE drive_file_id = ?").bind(uploaded.id).first();
   await env.DB.prepare("UPDATE activity_albums SET updated_at = datetime('now') WHERE id = ?").bind(albumId).run();
   return json({ photo: { id: row.id, file_name: name } }, 201);
@@ -510,14 +517,14 @@ async function downloadZip(env, id, partNo, user) {
 }
 
 // ส่งภาพผ่าน Worker (ไฟล์ใน Drive ไม่ต้องเปิดสาธารณะ) + เก็บแคชที่ Cloudflare
-const imageCacheKey = (origin, id, size) => new Request(`${origin}/img/${id}/${size}`);
+const imageCacheKey = (origin, id, size) => new Request(`${origin}/img/${id}/${size}${size === "thumb" ? "?v=2" : ""}`);
 let cacheOrigin = "https://activity.banpadengschool.ac.th";
 async function purgeImageCache(id) {
   await Promise.all(["thumb", "full"].map((s) => caches.default.delete(imageCacheKey(cacheOrigin, id, s)).catch(() => {})));
 }
 
 async function serveImage(request, env, ctx, id, size) {
-  const photo = await env.DB.prepare(`SELECT p.drive_file_id, p.mime_type, p.file_name, a.audience, a.created_by FROM activity_photos p
+  const photo = await env.DB.prepare(`SELECT p.drive_file_id, p.mime_type, p.file_name, p.rotation, a.audience, a.created_by FROM activity_photos p
     JOIN activity_albums a ON a.id = p.album_id WHERE p.id = ? AND p.deleted_at IS NULL AND a.deleted_at IS NULL`).bind(id).first();
   if (!photo) return new Response("Not found", { status: 404 });
   const isPublic = (photo.audience || "public") === "public";
@@ -525,7 +532,14 @@ async function serveImage(request, env, ctx, id, size) {
   const key = imageCacheKey(new URL(request.url).origin, id, size);
   const cached = isPublic ? await caches.default.match(key) : null;
   if (cached) return cached;
-  let upstream = size === "thumb" ? await drive.fetchThumbnail(env, photo.drive_file_id, THUMB_SIZE).catch(() => null) : null;
+  // ภาพหมุน 180° (EXIF) ภาพย่อของ Drive ออกมากลับหัว → ย่อจากภาพเต็มเอง (Cloudflare หมุนตาม EXIF ให้)
+  const upsideDown = Number(photo.rotation) === 2;
+  let upstream = null;
+  if (size === "thumb") {
+    upstream = upsideDown
+      ? await drive.fetchResized(env, photo.drive_file_id, THUMB_SIZE).catch(() => null)
+      : await drive.fetchThumbnail(env, photo.drive_file_id, THUMB_SIZE).catch(() => null);
+  }
   const isThumb = !!upstream;
   if (!upstream) upstream = await drive.fetchMedia(env, photo.drive_file_id);
   const headers = new Headers({

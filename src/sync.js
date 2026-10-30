@@ -82,21 +82,22 @@ export async function syncAlbumPhotos(env, album) {
     files = files.concat(await drive.listAll(env, `'${drive.escapeQuery(sf.id)}' in parents and ${IMAGE_Q}`, IMAGE_FIELDS));
   }
   files.sort((a, b) => String(a.name).localeCompare(String(b.name), "th", { numeric: true }));
-  const existing = (await env.DB.prepare("SELECT id, drive_file_id, width, height, deleted_at FROM activity_photos WHERE album_id = ?").bind(album.id).all()).results || [];
+  const existing = (await env.DB.prepare("SELECT id, drive_file_id, width, height, rotation, deleted_at FROM activity_photos WHERE album_id = ?").bind(album.id).all()).results || [];
   const known = new Map(existing.map((p) => [p.drive_file_id, p]));
   const present = new Set(files.map((f) => f.id));
   const stmts = [];
   for (const f of files) {
     const [w, h] = displayDims(f.imageMediaMetadata);
+    const rot = Number(f.imageMediaMetadata?.rotation) || 0;
     const row = known.get(f.id);
     if (row) {
-      if (w && h && (row.width !== w || row.height !== h)) {
-        stmts.push(env.DB.prepare("UPDATE activity_photos SET width = ?, height = ? WHERE id = ?").bind(w, h, row.id));
+      if ((w && h && (row.width !== w || row.height !== h)) || row.rotation !== rot) {
+        stmts.push(env.DB.prepare("UPDATE activity_photos SET width = COALESCE(?, width), height = COALESCE(?, height), rotation = ? WHERE id = ?").bind(w, h, rot, row.id));
       }
       continue;
     }
-    stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO activity_photos (album_id, drive_file_id, drive_parent_id, file_name, mime_type, file_size, width, height, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'drive')`).bind(album.id, f.id, (f.parents || [])[0] || null, f.name, f.mimeType, Number(f.size) || null, w, h));
+    stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO activity_photos (album_id, drive_file_id, drive_parent_id, file_name, mime_type, file_size, width, height, rotation, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'drive')`).bind(album.id, f.id, (f.parents || [])[0] || null, f.name, f.mimeType, Number(f.size) || null, w, h, rot));
   }
   for (const p of existing) {
     if (!p.deleted_at && !present.has(p.drive_file_id)) {
