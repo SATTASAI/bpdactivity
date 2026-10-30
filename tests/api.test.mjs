@@ -274,3 +274,14 @@ test("Audience: สาธารณะ / เฉพาะบุคลากร / �
   assert.equal((await call(`/api/albums/${priv}`, { method: "PATCH", body: { audience: "public" }, cookie: c1 })).res.status, 200);
   assert.equal((await call(`/api/albums/${priv}`)).data.album.audience, "public");
 });
+
+test("session ต่ออายุอัตโนมัติ", async () => {
+  const realNow = Date.now;
+  Date.now = () => realNow() - 2 * 86400 * 1000; // ล็อกอินเมื่อ 2 วันก่อน
+  const c = await loginAs("t1@x.th");
+  Date.now = realNow;
+  const { res, data } = await call("/api/me", { cookie: c });
+  assert.equal(data.user.full_name, "ครูหนึ่ง"); assert.equal(data.user._iat, undefined);
+  assert.match(res.headers.get("Set-Cookie") || "", /bpd_activity=.+Max-Age=31536000/);
+  assert.equal((await call("/api/me", { cookie: res.headers.get("Set-Cookie").split(";")[0] })).res.headers.get("Set-Cookie"), null);
+});

@@ -1,7 +1,7 @@
 // ฟังก์ชันช่วยด้าน crypto: เข้ารหัสผ่าน (PBKDF2) และ JWT (HS256)
 
 export const AUTH_COOKIE_NAME = "bpd_activity";
-const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 วัน
+const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 ปี + ต่ออายุอัตโนมัติทุกครั้งที่ใช้งาน (ไม่หลุดจนกว่าจะกดออก)
 
 function toHex(buffer) {
   return Array.from(new Uint8Array(buffer))

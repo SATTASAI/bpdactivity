@@ -23,6 +23,7 @@ async function api(path, options = {}) {
   if (init.body && !(init.body instanceof FormData)) { init.headers["Content-Type"] = "application/json"; init.body = JSON.stringify(init.body); }
   const res = await fetch(path, init);
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && state.user && path !== "/api/login") { state.user = null; renderTop(); setTimeout(loginDialog); }
   if (!res.ok) { const e = new Error(data.error || `เกิดข้อผิดพลาด (${res.status})`); e.status = res.status; throw e; }
   return data;
 }
@@ -601,6 +602,11 @@ window.addEventListener("hashchange", route);
 
 (async () => {
   try { state.user = (await api("/api/me")).user; } catch {}
+  // กลับมาที่แท็บ → ตรวจ/ต่ออายุ session
+  document.addEventListener("visibilitychange", async () => {
+    if (document.hidden) return;
+    try { const u = (await api("/api/me")).user; if (!!u !== !!state.user) { state.user = u; renderTop(); route(); } } catch {}
+  });
   renderTop(); route(); loadSidebar();
 })();
 

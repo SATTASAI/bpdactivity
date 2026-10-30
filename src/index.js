@@ -148,7 +148,7 @@ async function currentUser(request, env) {
   // เปลี่ยนรหัสผ่าน/ออกจากทุกอุปกรณ์ใน system → session ที่นี่หมดอายุด้วย
   if (user.session_version != null && Number(payload.sv || 1) !== Number(user.session_version)) return null;
   if (await isViewerAccount(env, user.id)) return null;
-  return { id: user.id, email: user.email, full_name: user.full_name, role: user.role, is_admin: ADMIN_ROLES.includes(user.role) };
+  return { _iat: Number(payload.iat || 0), _sv: user.session_version ?? 1, id: user.id, email: user.email, full_name: user.full_name, role: user.role, is_admin: ADMIN_ROLES.includes(user.role) };
 }
 
 const canManageAlbum = (user, album) => user.is_admin || Number(album.created_by) === Number(user.id);
@@ -552,7 +552,22 @@ async function handle(request, env, ctx) {
   if (path === "/api/logout" && method === "POST") return json({ ok: true }, 200, { "Set-Cookie": buildClearCookie() });
 
   const user = await currentUser(request, env);
-  if (path === "/api/me" && method === "GET") return json({ user });
+  const response = await handleApi(request, env, ctx, url, path, method, user);
+  // ต่ออายุ session อัตโนมัติ (ออกใหม่วันละครั้ง) → ล็อกอินค้างไว้จนกว่าจะกดออกจากระบบ
+  if (user && Date.now() / 1000 - user._iat > SESSION_REFRESH_SECONDS && !response.headers.has("Set-Cookie")) {
+    const token = await signJWT({ sub: user.id, sv: user._sv, app: "activity" }, await jwtSecret(env));
+    const out = new Response(response.body, response);
+    out.headers.append("Set-Cookie", buildSessionCookie(token));
+    return out;
+  }
+  return response;
+}
+
+const SESSION_REFRESH_SECONDS = 60 * 60 * 24;
+const publicUser = (user) => user && { id: user.id, email: user.email, full_name: user.full_name, role: user.role, is_admin: user.is_admin };
+
+async function handleApi(request, env, ctx, url, path, method, user) {
+  if (path === "/api/me" && method === "GET") return json({ user: publicUser(user) });
   if (path === "/api/albums" && method === "GET") return listAlbums(url, env, user);
   const albumMatch = path.match(/^\/api\/albums\/(\d+)$/);
   if (albumMatch && method === "GET") return showAlbum(env, Number(albumMatch[1]), user);
