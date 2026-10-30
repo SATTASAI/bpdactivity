@@ -177,7 +177,8 @@ function cleanAudience(value) {
   const audience = String(value || "public");
   return AUDIENCES.includes(audience) ? audience : null;
 }
-const canDeletePhoto = (user, album, photo) => canManageAlbum(user, album) || Number(photo.uploaded_by) === Number(user.id);
+// ลบภาพได้เฉพาะผู้ดูแลระบบ (ผู้ใช้ทุกคนอัพโหลดได้)
+const canDeletePhoto = (user) => !!user?.is_admin;
 
 async function login(request, env) {
   const body = await request.json().catch(() => ({}));
@@ -368,7 +369,7 @@ async function deletePhoto(env, user, photoId, ctx) {
   if (!photo) return fail("ไม่พบภาพนี้", 404);
   const album = await getAlbum(env, photo.album_id);
   if (!album) return fail("ไม่พบงานนี้", 404);
-  if (!canDeletePhoto(user, album, photo)) return fail("ลบได้เฉพาะผู้อัพโหลด ผู้สร้างงาน หรือผู้ดูแลระบบ", 403);
+  if (!canDeletePhoto(user, album, photo)) return fail("ลบภาพได้เฉพาะผู้ดูแลระบบ", 403);
   await drive.trashFile(env, photo.drive_file_id);
   await env.DB.batch([
     env.DB.prepare("UPDATE activity_photos SET deleted_at = datetime('now'), deleted_by = ? WHERE id = ?").bind(user.id, photoId),

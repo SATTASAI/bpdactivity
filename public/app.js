@@ -383,7 +383,7 @@ async function loadAlbum(id) {
 
 const isAdmin = () => !!state.user?.is_admin;
 const canManage = () => state.user && (isAdmin() || state.user.id === state.album.created_by);
-const canDelete = (p) => state.user && (canManage() || state.user.id === p.uploaded_by);
+const canDelete = () => isAdmin();
 
 function renderAlbum() {
   const a = state.album;
