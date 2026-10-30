@@ -2,7 +2,7 @@
 const $ = (sel, el = document) => el.querySelector(sel);
 const app = $("#app");
 $(".skip-link").onclick = (e) => { e.preventDefault(); app.focus(); };
-const state = { selecting: false, selected: new Set(), user: null, list: { q: "", audience: "", page: 1, albums: [], hasMore: false }, sidebar: { albums: [], page: 1, hasMore: false, loading: false }, album: null, photos: [], viewVersion: 0, listRequest: 0 };
+const state = { selecting: false, selected: new Set(), user: null, list: { q: "", audience: "", selecting: false, selected: new Set(), page: 1, albums: [], hasMore: false }, sidebar: { albums: [], page: 1, hasMore: false, loading: false }, album: null, photos: [], viewVersion: 0, listRequest: 0 };
 
 // Feather icons (MIT), served locally without a third-party runtime dependency.
 const icon = (name) => `<svg aria-hidden="true"><use href="/icons.svg#${name}"/></svg>`;
@@ -236,10 +236,12 @@ async function loadSidebar(append = false) {
 function albumMeta(a) {
   return `<div class="meta"><span>${ICON.calendar}${thaiDate(a.event_date)}</span><span>${ICON.image}${a.photo_count} ภาพ</span>${audienceBadge(a)}</div>`;
 }
+const canManageListAlbum = (a) => state.user && (state.user.is_admin || state.user.id === a.created_by);
 function albumCard(a) {
   const cover = a.cover_id ? `<img src="/img/${a.cover_id}/thumb" alt="" loading="lazy">` : ICON.image;
-  return `<a class="album" href="#/album/${a.id}">
-    <div class="cover">${cover}</div>
+  const sel = state.list.selecting, mine = canManageListAlbum(a), picked = state.list.selected.has(a.id);
+  return `<a class="album${sel && picked ? " picked" : ""}${sel && !mine ? " locked" : ""}" href="#/album/${a.id}" data-album="${a.id}"${sel ? ` aria-pressed="${picked}"` : ""}>
+    <div class="cover">${cover}${sel && mine ? `<span class="tick" aria-hidden="true">${picked ? "✓" : ""}</span>` : ""}</div>
     <div class="album-body"><h3>${esc(a.title)}</h3>${albumMeta(a)}</div></a>`;
 }
 function featuredAlbum(a) {
@@ -266,6 +268,7 @@ function renderList() {
       <div class="tools"><label class="search">${ICON.search}<input id="q" type="search" aria-label="ค้นหาชื่องาน" placeholder="ค้นหาชื่องาน" value="${esc(state.list.q)}"></label>
         ${state.user ? `<select id="audFilter" class="aud-filter" aria-label="กรองตามผู้ที่มองเห็น"><option value="">ทุก Audience</option>${Object.entries(AUDIENCE_SHORT)
           .map(([k, v]) => `<option value="${k}"${k === state.list.audience ? " selected" : ""}>${v}</option>`).join("")}</select>` : ""}
+        ${state.user ? `<button class="btn ghost${state.list.selecting ? " on" : ""}" id="albumSelect">${ICON.select} ${state.list.selecting ? "เลิกเลือก" : "เลือกหลายอัลบั้ม"}</button>` : ""}
         <button class="btn" id="quickUpload">${ICON.upload} อัพโหลดภาพ</button></div>
     </section>
     <div id="listBody" aria-busy="true"><div class="empty" role="status">กำลังโหลด…</div></div>
@@ -280,6 +283,37 @@ function renderList() {
     }); }, 300);
   };
   $("#quickUpload").onclick = quickUploadDialog;
+  if ($("#albumSelect")) $("#albumSelect").onclick = () => {
+    state.list.selecting = !state.list.selecting; state.list.selected.clear();
+    const b = $("#albumSelect"); b.classList.toggle("on", state.list.selecting);
+    b.innerHTML = `${ICON.select} ${state.list.selecting ? "เลิกเลือก" : "เลือกหลายอัลบั้ม"}`;
+    renderListBody();
+  };
+  $("#listBody").addEventListener("click", async (e) => {
+    if (!state.list.selecting) return;
+    const card = e.target.closest("[data-album]");
+    if (card) {
+      e.preventDefault();
+      const id = Number(card.dataset.album), a = state.list.albums.find((x) => x.id === id);
+      if (!a || !canManageListAlbum(a)) return toast("เลือกได้เฉพาะอัลบั้มที่คุณสร้าง (หรือผู้ดูแลระบบ)", true);
+      const set = state.list.selected; set.has(id) ? set.delete(id) : set.add(id);
+      renderListBody(); $(`[data-album="${id}"]`)?.focus();
+      return;
+    }
+    if (e.target.closest("#albSelAll")) {
+      const mine = state.list.albums.filter(canManageListAlbum), set = state.list.selected;
+      if (mine.every((a) => set.has(a.id))) set.clear(); else mine.forEach((a) => set.add(a.id));
+      renderListBody();
+    }
+    if (e.target.closest("#albApply")) {
+      const audience = $("#albAudience").value, ids = [...state.list.selected];
+      try {
+        const r = await api("/api/albums/audience", { method: "POST", body: { ids, audience } });
+        toast(`ตั้ง ${r.updated} อัลบั้มเป็น “${AUDIENCE_SHORT[audience]}” แล้ว`);
+        state.list.selected.clear(); await loadList(); loadSidebar();
+      } catch (x) { toast(x.message, true); }
+    }
+  });
   if ($("#audFilter")) $("#audFilter").onchange = (e) => {
     state.list.audience = e.target.value; $("#listBody").setAttribute("aria-busy", "true");
     loadList().catch((x) => { if (view === state.viewVersion) { $("#listBody").setAttribute("aria-busy", "false"); toast(x.message, true); } });
@@ -299,9 +333,15 @@ function renderListBody() {
     body.innerHTML = `<div class="empty" role="status">${ICON.image}<h2>${q || state.list.audience ? "ไม่พบงานที่ค้นหา" : "ยังไม่มีภาพกิจกรรม"}</h2><p>${q || state.list.audience ? "ลองค้นหาด้วยชื่อหรือตัวกรองอื่น" : "เมื่อครูเพิ่มอัลบั้ม ภาพกิจกรรมจะแสดงที่นี่"}</p></div>`;
     return;
   }
-  const filtered = q || state.list.audience;
+  const filtered = q || state.list.audience || state.list.selecting;
+  const sel = state.list.selected;
+  const selBar = state.list.selecting ? `<div class="select-bar" role="toolbar" aria-label="จัดการอัลบั้มที่เลือก">
+    <span><b>${sel.size}</b> อัลบั้มที่เลือก</span>
+    <button class="btn ghost sm" id="albSelAll">เลือก/ไม่เลือกทั้งหมด</button>
+    <select id="albAudience" class="aud-filter sm" aria-label="Audience ที่จะตั้ง">${Object.entries(AUDIENCE_SHORT).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select>
+    <button class="btn sm" id="albApply" ${sel.size ? "" : "disabled"}>ตั้ง Audience</button></div>` : "";
   const otherAlbums = filtered ? albums : albums.slice(1);
-  body.innerHTML = `${!filtered ? featuredAlbum(albums[0]) : ""}${otherAlbums.length ? `<section class="album-section" aria-label="${filtered ? "ผลการค้นหา" : "อัลบั้มทั้งหมด"}">
+  body.innerHTML = `${selBar}${!filtered ? featuredAlbum(albums[0]) : ""}${otherAlbums.length ? `<section class="album-section" aria-label="${filtered ? "ผลการค้นหา" : "อัลบั้มทั้งหมด"}">
     <h2 class="section-title">${filtered ? "ผลการค้นหา" : "อัลบั้มทั้งหมด"}</h2><div class="grid">${otherAlbums.map(albumCard).join("")}</div></section>` : ""}
     ${hasMore ? `<div class="more"><button class="btn ghost" id="moreBtn">ดูเพิ่มเติม</button></div>` : ""}`;
   if (hasMore) $("#moreBtn").onclick = async (e) => {
@@ -343,6 +383,8 @@ function renderAlbum() {
       <div class="tools">
         ${state.photos.length ? `<button class="btn ghost sm" id="dlAlbum">${ICON.download} ดาวน์โหลดอัลบั้ม</button>` : ""}
         ${selectable.length ? `<button class="btn ghost sm${state.selecting ? " on" : ""}" id="selectMode">${ICON.select} ${state.selecting ? "เลิกเลือก" : "เลือกภาพ"}</button>` : ""}
+        ${manage ? `<select id="audQuick" class="aud-filter sm" aria-label="ผู้ที่มองเห็นอัลบั้มนี้" title="ผู้ที่มองเห็น (Audience)">${Object.entries(AUDIENCE_SHORT)
+          .map(([k, v]) => `<option value="${k}"${k === (a.audience || "public") ? " selected" : ""}>👁 ${v}</option>`).join("")}</select>` : ""}
         ${manage ? `<button class="btn ghost sm" id="editAlbum">${ICON.edit} แก้ไขอัลบั้ม</button><button class="btn danger sm" id="delAlbum">${ICON.trash} ลบงาน</button>` : ""}
       </div>
     </section>
@@ -380,6 +422,11 @@ function renderAlbum() {
     $("#selMove").onclick = () => moveDialog([...sel]);
   }
   if (manage) {
+    $("#audQuick").onchange = async (e) => {
+      const value = e.target.value;
+      try { await api(`/api/albums/${a.id}`, { method: "PATCH", body: { audience: value } }); state.album.audience = value; renderAlbum(); loadSidebar(); toast(`ตั้งเป็น “${AUDIENCE_SHORT[value]}” แล้ว`); }
+      catch (x) { e.target.value = a.audience || "public"; toast(x.message, true); }
+    };
     $("#editAlbum").onclick = () => albumDialog(a);
     $("#delAlbum").onclick = async () => {
       if (!await confirmBox("ลบงานนี้?", `ภาพทั้งหมด ${state.photos.length} ภาพและโฟลเดอร์ใน Drive จะถูกย้ายไปถังขยะ (กู้คืนใน Drive ได้ภายใน 30 วัน)`, "ลบงาน")) return;

@@ -445,6 +445,27 @@ async function bulkMove(request, env, user) {
   return json({ moved: ok.length, failed: failed.length, error: failed[0]?.error || null });
 }
 
+// เปลี่ยน Audience หลายอัลบั้มพร้อมกัน (เฉพาะอัลบั้มที่ผู้ใช้จัดการได้)
+async function bulkAudience(request, env, user, ctx) {
+  const body = await request.json().catch(() => ({}));
+  const audience = cleanAudience(body.audience);
+  if (!audience || body.audience === undefined) return fail("กลุ่มผู้ชมไม่ถูกต้อง");
+  const ids = [...new Set((Array.isArray(body.ids) ? body.ids : []).map(Number).filter((n) => n > 0))].slice(0, 500);
+  if (!ids.length) return fail("กรุณาเลือกอัลบั้ม");
+  const albums = (await env.DB.prepare(`SELECT id, created_by, audience FROM activity_albums WHERE deleted_at IS NULL AND id IN (${ids.map(() => "?").join(",")})`)
+    .bind(...ids).all()).results || [];
+  const allowed = albums.filter((a) => canManageAlbum(user, a));
+  const changed = allowed.filter((a) => (a.audience || "public") !== audience);
+  if (changed.length) {
+    await env.DB.batch(changed.map((a) => env.DB.prepare("UPDATE activity_albums SET audience = ?, updated_at = datetime('now') WHERE id = ?").bind(audience, a.id)));
+    if (audience !== "public") {
+      const photos = (await env.DB.prepare(`SELECT id FROM activity_photos WHERE album_id IN (${changed.map(() => "?").join(",")})`).bind(...changed.map((a) => a.id)).all()).results || [];
+      ctx.waitUntil(Promise.all(photos.map((p) => purgeImageCache(p.id))));
+    }
+  }
+  return json({ updated: allowed.length, denied: ids.length - allowed.length });
+}
+
 // รายชื่ออัลบั้มทั้งหมด (สำหรับเลือกอัลบั้มตอนอัพโหลด/ย้ายภาพ)
 async function albumOptions(env, user) {
   const visible = visibleSql(user);
@@ -602,6 +623,7 @@ async function handleApi(request, env, ctx, url, path, method, user) {
   // ด้านล่างต้องล็อกอิน
   if (!user) return fail("กรุณาเข้าสู่ระบบ", 401);
   if (path === "/api/albums" && method === "POST") return createAlbum(request, env, user);
+  if (path === "/api/albums/audience" && method === "POST") return bulkAudience(request, env, user, ctx);
   if (albumMatch && method === "PATCH") return updateAlbum(request, env, user, Number(albumMatch[1]), ctx);
   if (albumMatch && method === "DELETE") return deleteAlbum(env, user, Number(albumMatch[1]), ctx);
   const upload = path.match(/^\/api\/albums\/(\d+)\/photos$/);

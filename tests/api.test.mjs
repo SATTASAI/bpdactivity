@@ -299,3 +299,15 @@ test("SSO จาก system: รหัสใช้ครั้งเดียว"
   assert.equal((await call("/api/me", { cookie: c })).data.user.full_name, "ครูหนึ่ง");
   assert.equal((await handle(new Request(`${O}/sso?code=${code}`), env, ctx)).headers.get("Set-Cookie"), null);
 });
+
+test("เปลี่ยน Audience หลายอัลบั้มพร้อมกัน", async () => {
+  const c1 = await loginAs("t1@x.th"), c2 = await loginAs("t2@x.th");
+  const mk = async (title, c) => (await call("/api/albums", { method: "POST", body: { title }, cookie: c })).data.album.id;
+  const a = await mk("bulk-a", c1), b = await mk("bulk-b", c1), other = await mk("bulk-c", c2);
+  const r = (await call("/api/albums/audience", { method: "POST", body: { ids: [a, b, other], audience: "staff" }, cookie: c1 })).data;
+  assert.deepEqual(r, { updated: 2, denied: 1 });
+  const aud = (id) => sql.prepare("SELECT audience FROM activity_albums WHERE id = ?").get(id).audience;
+  assert.equal(aud(a), "staff"); assert.equal(aud(b), "staff"); assert.equal(aud(other), "public");
+  assert.equal((await call("/api/albums/audience", { method: "POST", body: { ids: [a], audience: "x" }, cookie: c1 })).res.status, 400);
+  assert.equal((await call("/api/albums/audience", { method: "POST", body: { ids: [a], audience: "public" } })).res.status, 401);
+});
