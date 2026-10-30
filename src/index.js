@@ -94,6 +94,7 @@ export async function ensureSchema(env) {
   await migrateV1(env);
   const albumCols = ((await env.DB.prepare("PRAGMA table_info(activity_albums)").all()).results || []).map((c) => c.name);
   if (!albumCols.includes("description")) await env.DB.prepare("ALTER TABLE activity_albums ADD COLUMN description TEXT").run();
+  if (!albumCols.includes("audience")) await env.DB.prepare("ALTER TABLE activity_albums ADD COLUMN audience TEXT NOT NULL DEFAULT 'public'").run();
   // ครั้งเดียว: ให้ซิงก์ตรวจทุกอัลบั้มใหม่ เพื่อเก็บขนาดภาพ (กว้าง/สูงตามการหมุนภาพ) ไว้เลือกภาพปก
   const flag = await env.DB.prepare("INSERT OR IGNORE INTO activity_sync_state (key, value) VALUES ('dims_backfill_v1', datetime('now'))").run();
   if (Number(flag.meta?.changes) > 0) await env.DB.prepare("UPDATE activity_albums SET synced_at = NULL").run();
@@ -151,6 +152,23 @@ async function currentUser(request, env) {
 }
 
 const canManageAlbum = (user, album) => user.is_admin || Number(album.created_by) === Number(user.id);
+// Audience: public = ทุกคน, staff = เฉพาะบุคลากรที่ล็อกอิน, private = ผู้สร้างงานและผู้ดูแลระบบ
+const AUDIENCES = ["public", "staff", "private"];
+function canViewAlbum(user, album) {
+  const audience = album.audience || "public";
+  if (audience === "public") return true;
+  if (!user) return false;
+  return audience === "staff" || canManageAlbum(user, album);
+}
+function visibleSql(user, alias = "a") {
+  if (!user) return { sql: `${alias}.audience = 'public'`, binds: [] };
+  if (user.is_admin) return { sql: "1 = 1", binds: [] };
+  return { sql: `(${alias}.audience IN ('public', 'staff') OR ${alias}.created_by = ?)`, binds: [user.id] };
+}
+function cleanAudience(value) {
+  const audience = String(value || "public");
+  return AUDIENCES.includes(audience) ? audience : null;
+}
 const canDeletePhoto = (user, album, photo) => canManageAlbum(user, album) || Number(photo.uploaded_by) === Number(user.id);
 
 async function login(request, env) {
@@ -184,13 +202,18 @@ const COVER_RATIO = 1.75;
 const AUTO_COVER_SQL = `(SELECT p.id FROM activity_photos p WHERE p.album_id = a.id AND p.deleted_at IS NULL
   ORDER BY (p.width > 0 AND p.height > 0) DESC, ABS(p.width * 1.0 / NULLIF(p.height, 0) - ${COVER_RATIO}), p.id LIMIT 1)`;
 
-async function listAlbums(url, env) {
+async function listAlbums(url, env, user) {
   const q = String(url.searchParams.get("q") || "").trim().slice(0, 100);
   const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
-  const where = q ? "a.deleted_at IS NULL AND a.title LIKE ?" : "a.deleted_at IS NULL";
-  const binds = q ? [`%${q}%`] : [];
+  const visible = visibleSql(user);
+  const conds = ["a.deleted_at IS NULL", visible.sql];
+  const binds = [...visible.binds];
+  if (q) { conds.push("a.title LIKE ?"); binds.push(`%${q}%`); }
+  const audience = url.searchParams.get("audience");
+  if (AUDIENCES.includes(audience)) { conds.push("a.audience = ?"); binds.push(audience); }
+  const where = conds.join(" AND ");
   const rows = await env.DB.prepare(`
-    SELECT a.id, a.title, a.event_date, a.description, a.created_by, u.full_name AS created_by_name,
+    SELECT a.id, a.title, a.event_date, a.description, a.audience, a.created_by, u.full_name AS created_by_name,
       (SELECT COUNT(*) FROM activity_photos p WHERE p.album_id = a.id AND p.deleted_at IS NULL) AS photo_count,
       COALESCE(
         (SELECT p.id FROM activity_photos p WHERE p.id = a.cover_photo_id AND p.album_id = a.id AND p.deleted_at IS NULL),
@@ -207,11 +230,11 @@ function getAlbum(env, id) {
   return env.DB.prepare("SELECT * FROM activity_albums WHERE id = ? AND deleted_at IS NULL").bind(id).first();
 }
 
-async function showAlbum(env, id) {
-  const album = await env.DB.prepare(`SELECT a.id, a.title, a.event_date, a.description, a.folder_name, a.source, a.cover_photo_id, a.created_by, a.created_at, u.full_name AS created_by_name,
+async function showAlbum(env, id, user) {
+  const album = await env.DB.prepare(`SELECT a.id, a.title, a.event_date, a.description, a.audience, a.folder_name, a.source, a.cover_photo_id, a.created_by, a.created_at, u.full_name AS created_by_name,
     COALESCE((SELECT p.id FROM activity_photos p WHERE p.id = a.cover_photo_id AND p.album_id = a.id AND p.deleted_at IS NULL), ${AUTO_COVER_SQL}) AS cover_id
     FROM activity_albums a LEFT JOIN users u ON u.id = a.created_by WHERE a.id = ? AND a.deleted_at IS NULL`).bind(id).first();
-  if (!album) return fail("ไม่พบงานนี้", 404);
+  if (!album || !canViewAlbum(user, album)) return fail("ไม่พบงานนี้", 404);
   const photos = await env.DB.prepare(`SELECT id, file_name, width, height, uploaded_by, created_at FROM activity_photos
     WHERE album_id = ? AND deleted_at IS NULL ORDER BY id`).bind(id).all();
   return json({ album, photos: photos.results || [] });
@@ -228,20 +251,22 @@ async function createAlbum(request, env, user) {
   const body = await request.json().catch(() => ({}));
   const { title, error } = cleanTitle(body.title);
   if (error) return fail(error);
+  const audience = cleanAudience(body.audience);
+  if (!audience) return fail("กลุ่มผู้ชมไม่ถูกต้อง");
   const configError = drive.driveConfigError(env);
   if (configError) return fail(configError, 503);
   const eventDate = drive.thaiToday(); // ประทับวันที่อัตโนมัติ (วันที่สร้างงาน ตามเวลาไทย)
   const name = drive.folderName(title, eventDate);
   const folderId = await drive.createFolder(env, name);
   // ซิงก์อาจเจอโฟลเดอร์ใหม่ก่อน → อัปเดตแถวเดิมให้เป็นของผู้สร้าง
-  await env.DB.prepare(`INSERT INTO activity_albums (title, event_date, folder_name, drive_folder_id, created_by, source) VALUES (?, ?, ?, ?, ?, 'web')
-    ON CONFLICT(drive_folder_id) DO UPDATE SET title = excluded.title, event_date = excluded.event_date, folder_name = excluded.folder_name, created_by = excluded.created_by, source = 'web'`)
-    .bind(title, eventDate, name, folderId, user.id).run();
+  await env.DB.prepare(`INSERT INTO activity_albums (title, event_date, folder_name, drive_folder_id, created_by, source, audience) VALUES (?, ?, ?, ?, ?, 'web', ?)
+    ON CONFLICT(drive_folder_id) DO UPDATE SET title = excluded.title, event_date = excluded.event_date, folder_name = excluded.folder_name, created_by = excluded.created_by, source = 'web', audience = excluded.audience`)
+    .bind(title, eventDate, name, folderId, user.id, audience).run();
   const row = await env.DB.prepare("SELECT id FROM activity_albums WHERE drive_folder_id = ?").bind(folderId).first();
-  return json({ album: { id: row.id, title, event_date: eventDate, folder_name: name } }, 201);
+  return json({ album: { id: row.id, title, event_date: eventDate, folder_name: name, audience } }, 201);
 }
 
-async function updateAlbum(request, env, user, id) {
+async function updateAlbum(request, env, user, id, ctx) {
   const album = await getAlbum(env, id);
   if (!album) return fail("ไม่พบงานนี้", 404);
   if (!canManageAlbum(user, album)) return fail("แก้ไขได้เฉพาะผู้สร้างงานหรือผู้ดูแลระบบ", 403);
@@ -265,6 +290,17 @@ async function updateAlbum(request, env, user, id) {
     const description = String(body.description || "").trim();
     if (description.length > 2000) return fail("คำอธิบายยาวเกิน 2000 ตัวอักษร");
     await env.DB.prepare("UPDATE activity_albums SET description = ?, updated_at = datetime('now') WHERE id = ?").bind(description || null, id).run();
+  }
+  if (body.audience !== undefined) {
+    const audience = cleanAudience(body.audience);
+    if (!audience) return fail("กลุ่มผู้ชมไม่ถูกต้อง");
+    if (audience !== (album.audience || "public")) {
+      await env.DB.prepare("UPDATE activity_albums SET audience = ?, updated_at = datetime('now') WHERE id = ?").bind(audience, id).run();
+      if (audience !== "public" && ctx) {
+        const photos = await env.DB.prepare("SELECT id FROM activity_photos WHERE album_id = ?").bind(id).all();
+        ctx.waitUntil(Promise.all((photos.results || []).map((p) => purgeImageCache(p.id))));
+      }
+    }
   }
   if (body.cover_photo_id !== undefined) {
     const photo = await env.DB.prepare("SELECT id FROM activity_photos WHERE id = ? AND album_id = ? AND deleted_at IS NULL").bind(Number(body.cover_photo_id), id).first();
@@ -297,7 +333,7 @@ function safeFileName(name, mimeType) {
 
 async function uploadPhoto(request, env, user, albumId) {
   const album = await getAlbum(env, albumId);
-  if (!album) return fail("ไม่พบงานนี้", 404);
+  if (!album || !canViewAlbum(user, album)) return fail("ไม่พบงานนี้", 404);
   const length = Number(request.headers.get("Content-Length") || 0);
   if (length > MAX_FILE_BYTES + 64 * 1024) return fail("ไฟล์ใหญ่เกิน 25 MB", 413);
   const form = await request.formData().catch(() => null);
@@ -389,7 +425,7 @@ async function bulkMove(request, env, user) {
   const { ids, error } = readIds(body);
   if (error) return fail(error);
   const target = await getAlbum(env, Number(body.album_id));
-  if (!target) return fail("ไม่พบอัลบั้มปลายทาง", 404);
+  if (!target || !canViewAlbum(user, target)) return fail("ไม่พบอัลบั้มปลายทาง", 404);
   const loaded = await loadOwnPhotos(env, user, ids);
   if (loaded.error) return fail(loaded.error, loaded.status);
   const photos = loaded.photos.filter((p) => p.album_id !== target.id);
@@ -408,27 +444,28 @@ async function bulkMove(request, env, user) {
 }
 
 // รายชื่ออัลบั้มทั้งหมด (สำหรับเลือกอัลบั้มตอนอัพโหลด/ย้ายภาพ)
-async function albumOptions(env) {
-  const rows = await env.DB.prepare("SELECT id, title, event_date FROM activity_albums WHERE deleted_at IS NULL ORDER BY event_date DESC, id DESC LIMIT 2000").all();
+async function albumOptions(env, user) {
+  const visible = visibleSql(user);
+  const rows = await env.DB.prepare(`SELECT a.id, a.title, a.event_date, a.audience FROM activity_albums a WHERE a.deleted_at IS NULL AND ${visible.sql} ORDER BY a.event_date DESC, a.id DESC LIMIT 2000`).bind(...visible.binds).all();
   return json({ albums: rows.results || [] });
 }
 
 // ---------- ดาวน์โหลดทั้งอัลบั้ม (.zip) ----------
-async function albumPhotosForZip(env, id) {
-  const album = await env.DB.prepare("SELECT id, title, folder_name FROM activity_albums WHERE id = ? AND deleted_at IS NULL").bind(id).first();
-  if (!album) return {};
+async function albumPhotosForZip(env, id, user) {
+  const album = await env.DB.prepare("SELECT id, title, folder_name, audience, created_by FROM activity_albums WHERE id = ? AND deleted_at IS NULL").bind(id).first();
+  if (!album || !canViewAlbum(user, album)) return {};
   const photos = (await env.DB.prepare("SELECT id, drive_file_id, file_name, file_size FROM activity_photos WHERE album_id = ? AND deleted_at IS NULL ORDER BY id").bind(id).all()).results || [];
   return { album, parts: splitParts(photos) };
 }
 
-async function downloadInfo(env, id) {
-  const { album, parts } = await albumPhotosForZip(env, id);
+async function downloadInfo(env, id, user) {
+  const { album, parts } = await albumPhotosForZip(env, id, user);
   if (!album) return fail("ไม่พบงานนี้", 404);
   return json({ parts: parts.map((p, i) => ({ part: i + 1, count: p.photos.length, bytes: p.bytes, url: `/dl/album/${id}/${i + 1}.zip` })) });
 }
 
-async function downloadZip(env, id, partNo) {
-  const { album, parts } = await albumPhotosForZip(env, id);
+async function downloadZip(env, id, partNo, user) {
+  const { album, parts } = await albumPhotosForZip(env, id, user);
   if (!album) return new Response("ไม่พบงานนี้", { status: 404 });
   const part = parts[partNo - 1];
   if (!part) return new Response("ไม่พบไฟล์ส่วนนี้", { status: 404 });
@@ -457,19 +494,21 @@ async function purgeImageCache(id) {
 }
 
 async function serveImage(request, env, ctx, id, size) {
-  const key = imageCacheKey(new URL(request.url).origin, id, size);
-  const cached = await caches.default.match(key);
-  if (cached) return cached;
-  const photo = await env.DB.prepare(`SELECT p.drive_file_id, p.mime_type, p.file_name FROM activity_photos p
+  const photo = await env.DB.prepare(`SELECT p.drive_file_id, p.mime_type, p.file_name, a.audience, a.created_by FROM activity_photos p
     JOIN activity_albums a ON a.id = p.album_id WHERE p.id = ? AND p.deleted_at IS NULL AND a.deleted_at IS NULL`).bind(id).first();
   if (!photo) return new Response("Not found", { status: 404 });
+  const isPublic = (photo.audience || "public") === "public";
+  if (!isPublic && !canViewAlbum(await currentUser(request, env), photo)) return new Response("Not found", { status: 404 });
+  const key = imageCacheKey(new URL(request.url).origin, id, size);
+  const cached = isPublic ? await caches.default.match(key) : null;
+  if (cached) return cached;
   let upstream = size === "thumb" ? await drive.fetchThumbnail(env, photo.drive_file_id, THUMB_SIZE).catch(() => null) : null;
   const isThumb = !!upstream;
   if (!upstream) upstream = await drive.fetchMedia(env, photo.drive_file_id);
   const headers = new Headers({
     "Content-Type": upstream.headers.get("Content-Type") || photo.mime_type,
     // ภาพย่อที่ได้จากภาพเต็ม (Drive ยังสร้างภาพย่อไม่เสร็จ) แคชสั้น ๆ เพื่อให้ครั้งหน้าได้ภาพย่อจริง
-    "Cache-Control": size === "thumb" && !isThumb ? "public, max-age=600" : "public, max-age=86400",
+    "Cache-Control": !isPublic ? "private, max-age=3600" : size === "thumb" && !isThumb ? "public, max-age=600" : "public, max-age=86400",
     "X-Content-Type-Options": "nosniff",
   });
   if (size === "full" && new URL(request.url).searchParams.has("download")) {
@@ -477,7 +516,7 @@ async function serveImage(request, env, ctx, id, size) {
     return new Response(upstream.body, { headers });
   }
   const response = new Response(upstream.body, { headers });
-  ctx.waitUntil(caches.default.put(key, response.clone()));
+  if (isPublic) ctx.waitUntil(caches.default.put(key, response.clone()));
   return response;
 }
 
@@ -497,7 +536,7 @@ async function handle(request, env, ctx) {
   if (img && method === "GET") { await ensureSchema(env); return serveImage(request, env, ctx, Number(img[1]), img[2]); }
 
   const zip = path.match(/^\/dl\/album\/(\d+)\/(\d+)\.zip$/);
-  if (zip && method === "GET") { await ensureSchema(env); return downloadZip(env, Number(zip[1]), Number(zip[2])); }
+  if (zip && method === "GET") { await ensureSchema(env); return downloadZip(env, Number(zip[1]), Number(zip[2]), await currentUser(request, env)); }
 
   if (!path.startsWith("/api/")) {
     const res = await env.ASSETS.fetch(request);
@@ -514,21 +553,21 @@ async function handle(request, env, ctx) {
 
   const user = await currentUser(request, env);
   if (path === "/api/me" && method === "GET") return json({ user });
-  if (path === "/api/albums" && method === "GET") return listAlbums(url, env);
+  if (path === "/api/albums" && method === "GET") return listAlbums(url, env, user);
   const albumMatch = path.match(/^\/api\/albums\/(\d+)$/);
-  if (albumMatch && method === "GET") return showAlbum(env, Number(albumMatch[1]));
+  if (albumMatch && method === "GET") return showAlbum(env, Number(albumMatch[1]), user);
 
   const dl = path.match(/^\/api\/albums\/(\d+)\/download$/);
-  if (dl && method === "GET") return downloadInfo(env, Number(dl[1]));
+  if (dl && method === "GET") return downloadInfo(env, Number(dl[1]), user);
 
   // ด้านล่างต้องล็อกอิน
   if (!user) return fail("กรุณาเข้าสู่ระบบ", 401);
   if (path === "/api/albums" && method === "POST") return createAlbum(request, env, user);
-  if (albumMatch && method === "PATCH") return updateAlbum(request, env, user, Number(albumMatch[1]));
+  if (albumMatch && method === "PATCH") return updateAlbum(request, env, user, Number(albumMatch[1]), ctx);
   if (albumMatch && method === "DELETE") return deleteAlbum(env, user, Number(albumMatch[1]), ctx);
   const upload = path.match(/^\/api\/albums\/(\d+)\/photos$/);
   if (upload && method === "POST") return uploadPhoto(request, env, user, Number(upload[1]));
-  if (path === "/api/album-options" && method === "GET") return albumOptions(env);
+  if (path === "/api/album-options" && method === "GET") return albumOptions(env, user);
   if (path === "/api/photos/delete" && method === "POST") return bulkDelete(request, env, user, ctx);
   if (path === "/api/photos/move" && method === "POST") return bulkMove(request, env, user);
   const photoMatch = path.match(/^\/api\/photos\/(\d+)$/);

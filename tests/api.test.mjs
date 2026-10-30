@@ -246,3 +246,31 @@ test("ภาพปกอัตโนมัติเลือกภาพที�
   const v2 = sql.prepare("SELECT width, height FROM activity_photos WHERE drive_file_id = 'v2'").get();
   assert.deepEqual([v2.width, v2.height], [3000, 4000]);
 });
+
+test("Audience: สาธารณะ / เฉพาะบุคลากร / ส่วนตัว", async () => {
+  const c1 = await loginAs("t1@x.th"), c2 = await loginAs("t2@x.th"), cA = await loginAs("admin@x.th");
+  const mk = async (title, audience) => (await call("/api/albums", { method: "POST", body: { title, audience }, cookie: c1 })).data.album.id;
+  const pub = await mk("aud-pub", "public"), staff = await mk("aud-staff", "staff"), priv = await mk("aud-priv", "private");
+  assert.equal((await call("/api/albums", { method: "POST", body: { title: "bad", audience: "xx" }, cookie: c1 })).res.status, 400);
+  const fd = new FormData(); fd.append("file", new File([new Uint8Array([1, 2])], "p.jpg", { type: "image/jpeg" }));
+  assert.equal((await call(`/api/albums/${priv}/photos`, { method: "POST", body: fd, cookie: c1 })).res.status, 201);
+  const photo = sql.prepare("SELECT id FROM activity_photos WHERE album_id = ?").get(priv).id;
+
+  const ids = async (cookie, qs = "") => (await call(`/api/albums?q=aud-${qs}`, { cookie })).data.albums.map((a) => a.id).sort();
+  assert.deepEqual(await ids(), [pub]);
+  assert.deepEqual(await ids(c2), [pub, staff].sort());
+  assert.deepEqual(await ids(c1), [pub, staff, priv].sort());
+  assert.deepEqual(await ids(cA), [pub, staff, priv].sort());
+  assert.deepEqual((await call("/api/albums?q=aud-&audience=staff", { cookie: c1 })).data.albums.map((a) => a.id), [staff]);
+
+  assert.equal((await call(`/api/albums/${staff}`)).res.status, 404);
+  assert.equal((await call(`/api/albums/${priv}`, { cookie: c2 })).res.status, 404);
+  assert.equal((await call(`/api/albums/${priv}/download`, { cookie: c2 })).res.status, 404);
+  assert.equal((await handle(new Request(`${O}/img/${photo}/thumb`), env, ctx)).status, 404);
+  assert.equal((await call(`/img/${photo}/thumb`, { cookie: c1 })).res.status, 200);
+
+  // เปลี่ยนเป็นสาธารณะ
+  assert.equal((await call(`/api/albums/${priv}`, { method: "PATCH", body: { audience: "public" }, cookie: c2 })).res.status, 403);
+  assert.equal((await call(`/api/albums/${priv}`, { method: "PATCH", body: { audience: "public" }, cookie: c1 })).res.status, 200);
+  assert.equal((await call(`/api/albums/${priv}`)).data.album.audience, "public");
+});

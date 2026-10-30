@@ -2,7 +2,7 @@
 const $ = (sel, el = document) => el.querySelector(sel);
 const app = $("#app");
 $(".skip-link").onclick = (e) => { e.preventDefault(); app.focus(); };
-const state = { selecting: false, selected: new Set(), user: null, list: { q: "", page: 1, albums: [], hasMore: false }, sidebar: { albums: [], page: 1, hasMore: false, loading: false }, album: null, photos: [], viewVersion: 0, listRequest: 0 };
+const state = { selecting: false, selected: new Set(), user: null, list: { q: "", audience: "", page: 1, albums: [], hasMore: false }, sidebar: { albums: [], page: 1, hasMore: false, loading: false }, album: null, photos: [], viewVersion: 0, listRequest: 0 };
 
 // Feather icons (MIT), served locally without a third-party runtime dependency.
 const icon = (name) => `<svg aria-hidden="true"><use href="/icons.svg#${name}"/></svg>`;
@@ -10,6 +10,12 @@ const ICON = Object.fromEntries(Object.entries({ search: "search", image: "image
 
 const MONTHS = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
 const thaiDate = (iso) => { const [y, m, d] = String(iso).split("-").map(Number); return `${d} ${MONTHS[m - 1]} ${y + 543}`; };
+// Audience (สิทธิ์การมองเห็นอัลบั้ม)
+const AUDIENCE = { public: "สาธารณะ (ทุกคน)", staff: "เฉพาะบุคลากร (ต้องล็อกอิน)", private: "ส่วนตัว (ผู้สร้างและผู้ดูแลระบบ)" };
+const AUDIENCE_SHORT = { public: "สาธารณะ", staff: "เฉพาะบุคลากร", private: "ส่วนตัว" };
+const audienceSelect = (value = "public") => `<label class="field">ผู้ที่มองเห็น (Audience)<select name="audience">${Object.entries(AUDIENCE)
+  .map(([k, v]) => `<option value="${k}"${k === value ? " selected" : ""}>${v}</option>`).join("")}</select></label>`;
+const audienceBadge = (a) => a.audience && a.audience !== "public" ? `<span class="aud-badge aud-${a.audience}">${AUDIENCE_SHORT[a.audience] || ""}</span>` : "";
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 async function api(path, options = {}) {
@@ -72,15 +78,16 @@ function albumDialog(album) {
     <label class="field">ชื่องาน<input name="title" maxlength="150" required value="${esc(album?.title || "")}" placeholder="เช่น กีฬาสีภายใน"></label>
     ${editing ? `<label class="field">วันที่จัดงาน<input name="event_date" type="date" required value="${esc(album.event_date)}"></label>
     <label class="field">คำอธิบายงาน<textarea name="description" rows="4" maxlength="2000" placeholder="รายละเอียดกิจกรรม (ไม่บังคับ)">${esc(album.description || "")}</textarea></label>` : ""}
+    ${audienceSelect(album?.audience)}
     <p class="err"></p>
     <div class="dlg-actions"><button class="btn ghost" value="cancel" formnovalidate>ยกเลิก</button><button class="btn" value="ok">${editing ? "บันทึก" : "สร้างงาน"}</button></div>`,
   async (fd) => {
     const title = String(fd.get("title") || "").trim();
     if (editing) {
-      await api(`/api/albums/${album.id}`, { method: "PATCH", body: { title, event_date: fd.get("event_date"), description: fd.get("description") } });
+      await api(`/api/albums/${album.id}`, { method: "PATCH", body: { title, event_date: fd.get("event_date"), description: fd.get("description"), audience: fd.get("audience") } });
       toast("บันทึกแล้ว"); loadAlbum(album.id); loadSidebar();
     } else {
-      const res = await api("/api/albums", { method: "POST", body: { title } });
+      const res = await api("/api/albums", { method: "POST", body: { title, audience: fd.get("audience") } });
       toast("สร้างงานแล้ว เลือกภาพเพื่ออัพโหลดได้เลย"); loadSidebar();
       location.hash = `#/album/${res.album.id}`;
     }
@@ -91,7 +98,7 @@ function albumDialog(album) {
 async function albumOptionsHtml(excludeId) {
   const { albums } = await api("/api/album-options");
   return albums.filter((a) => a.id !== excludeId)
-    .map((a) => `<option value="${a.id}">${esc(a.title)} · ${thaiDate(a.event_date)}</option>`).join("");
+    .map((a) => `<option value="${a.id}">${esc(a.title)} · ${thaiDate(a.event_date)}${a.audience && a.audience !== "public" ? ` · ${AUDIENCE_SHORT[a.audience]}` : ""}</option>`).join("");
 }
 
 // อัพโหลดจากหน้ารวม: เลือกอัลบั้มเดิมหรือสร้างใหม่ + เลือกภาพ (ไม่จำกัดจำนวน)
@@ -102,6 +109,7 @@ async function quickUploadDialog() {
   openDialog(`<h2>อัพโหลดภาพ</h2><p class="hint">สร้างงานใหม่หรือเลือกอัลบั้มเดิม แล้วเลือกภาพได้ไม่จำกัดจำนวน · งานใหม่จะได้โฟลเดอร์ “ชื่องาน (วันที่วันนี้)” ใน Google Drive</p>
     <div class="seg"><label><input type="radio" name="mode" value="new" checked> สร้างงานใหม่</label><label><input type="radio" name="mode" value="old"> อัลบั้มเดิม</label></div>
     <label class="field" data-mode="new">ชื่องาน<input name="title" maxlength="150" placeholder="เช่น กีฬาสีภายใน"></label>
+    <div data-mode="new">${audienceSelect()}</div>
     <label class="field" data-mode="old" hidden>อัลบั้ม<select name="album">${options}</select></label>
     <label class="field">ภาพ<input name="files" type="file" accept="image/*" multiple required></label>
     <p class="err"></p>
@@ -116,7 +124,7 @@ async function quickUploadDialog() {
     } else {
       const title = String(fd.get("title") || "").trim();
       if (!title) throw new Error("กรุณากรอกชื่องาน");
-      albumId = (await api("/api/albums", { method: "POST", body: { title } })).album.id;
+      albumId = (await api("/api/albums", { method: "POST", body: { title, audience: fd.get("audience") } })).album.id;
     }
     location.hash = `#/album/${albumId}`;
     uploadFiles(files, albumId);
@@ -225,7 +233,7 @@ async function loadSidebar(append = false) {
 
 // ---------- หน้ารายการงาน ----------
 function albumMeta(a) {
-  return `<div class="meta"><span>${ICON.calendar}${thaiDate(a.event_date)}</span><span>${ICON.image}${a.photo_count} ภาพ</span></div>`;
+  return `<div class="meta"><span>${ICON.calendar}${thaiDate(a.event_date)}</span><span>${ICON.image}${a.photo_count} ภาพ</span>${audienceBadge(a)}</div>`;
 }
 function albumCard(a) {
   const cover = a.cover_id ? `<img src="/img/${a.cover_id}/thumb" alt="" loading="lazy">` : ICON.image;
@@ -241,10 +249,10 @@ function featuredAlbum(a) {
     </div></a>`;
 }
 async function loadList(append = false) {
-  const { q } = state.list;
+  const { q, audience } = state.list;
   const page = append ? state.list.page + 1 : 1;
   const view = state.viewVersion, request = ++state.listRequest;
-  const data = await api(`/api/albums?page=${page}${q ? `&q=${encodeURIComponent(q)}` : ""}`);
+  const data = await api(`/api/albums?page=${page}${q ? `&q=${encodeURIComponent(q)}` : ""}${audience ? `&audience=${audience}` : ""}`);
   if (view !== state.viewVersion || request !== state.listRequest) return;
   state.list.albums = append ? state.list.albums.concat(data.albums) : data.albums;
   state.list.page = page; state.list.hasMore = data.has_more;
@@ -255,6 +263,8 @@ function renderList() {
   app.innerHTML = `<section class="hero">
       <div><h1>ภาพกิจกรรมโรงเรียน</h1><p>รวมภาพกิจกรรมของโรงเรียนบ้านป่าเด็ง</p></div>
       <div class="tools"><label class="search">${ICON.search}<input id="q" type="search" aria-label="ค้นหาชื่องาน" placeholder="ค้นหาชื่องาน" value="${esc(state.list.q)}"></label>
+        ${state.user ? `<select id="audFilter" class="aud-filter" aria-label="กรองตามผู้ที่มองเห็น"><option value="">ทุก Audience</option>${Object.entries(AUDIENCE_SHORT)
+          .map(([k, v]) => `<option value="${k}"${k === state.list.audience ? " selected" : ""}>${v}</option>`).join("")}</select>` : ""}
         <button class="btn" id="quickUpload">${ICON.upload} อัพโหลดภาพ</button></div>
     </section>
     <div id="listBody" aria-busy="true"><div class="empty" role="status">กำลังโหลด…</div></div>
@@ -269,6 +279,10 @@ function renderList() {
     }); }, 300);
   };
   $("#quickUpload").onclick = quickUploadDialog;
+  if ($("#audFilter")) $("#audFilter").onchange = (e) => {
+    state.list.audience = e.target.value; $("#listBody").setAttribute("aria-busy", "true");
+    loadList().catch((x) => { if (view === state.viewVersion) { $("#listBody").setAttribute("aria-busy", "false"); toast(x.message, true); } });
+  };
   loadList().catch((x) => {
     if (view !== state.viewVersion) return;
     $("#listBody").setAttribute("aria-busy", "false");
@@ -281,12 +295,13 @@ function renderListBody() {
   const { albums, hasMore, q } = state.list;
   body.setAttribute("aria-busy", "false");
   if (!albums.length) {
-    body.innerHTML = `<div class="empty" role="status">${ICON.image}<h2>${q ? "ไม่พบงานที่ค้นหา" : "ยังไม่มีภาพกิจกรรม"}</h2><p>${q ? "ลองค้นหาด้วยชื่อกิจกรรมอื่น" : "เมื่อครูเพิ่มอัลบั้ม ภาพกิจกรรมจะแสดงที่นี่"}</p></div>`;
+    body.innerHTML = `<div class="empty" role="status">${ICON.image}<h2>${q || state.list.audience ? "ไม่พบงานที่ค้นหา" : "ยังไม่มีภาพกิจกรรม"}</h2><p>${q || state.list.audience ? "ลองค้นหาด้วยชื่อหรือตัวกรองอื่น" : "เมื่อครูเพิ่มอัลบั้ม ภาพกิจกรรมจะแสดงที่นี่"}</p></div>`;
     return;
   }
-  const otherAlbums = q ? albums : albums.slice(1);
-  body.innerHTML = `${!q ? featuredAlbum(albums[0]) : ""}${otherAlbums.length ? `<section class="album-section" aria-label="${q ? "ผลการค้นหา" : "อัลบั้มทั้งหมด"}">
-    <h2 class="section-title">${q ? "ผลการค้นหา" : "อัลบั้มทั้งหมด"}</h2><div class="grid">${otherAlbums.map(albumCard).join("")}</div></section>` : ""}
+  const filtered = q || state.list.audience;
+  const otherAlbums = filtered ? albums : albums.slice(1);
+  body.innerHTML = `${!filtered ? featuredAlbum(albums[0]) : ""}${otherAlbums.length ? `<section class="album-section" aria-label="${filtered ? "ผลการค้นหา" : "อัลบั้มทั้งหมด"}">
+    <h2 class="section-title">${filtered ? "ผลการค้นหา" : "อัลบั้มทั้งหมด"}</h2><div class="grid">${otherAlbums.map(albumCard).join("")}</div></section>` : ""}
     ${hasMore ? `<div class="more"><button class="btn ghost" id="moreBtn">ดูเพิ่มเติม</button></div>` : ""}`;
   if (hasMore) $("#moreBtn").onclick = async (e) => {
     e.currentTarget.disabled = true;
@@ -322,7 +337,7 @@ function renderAlbum() {
   app.innerHTML = `<a class="back" href="#/">${ICON.back} กลับหน้ารวม</a>
     <section class="album-head">
       <div><h1>${esc(a.title)}</h1>
-        <div class="meta"><span>${ICON.calendar}${thaiDate(a.event_date)}</span><span>${ICON.image}${state.photos.length} ภาพ</span>${a.created_by_name ? `<span>${ICON.user}${esc(a.created_by_name)}</span>` : ""}</div>
+        <div class="meta"><span>${ICON.calendar}${thaiDate(a.event_date)}</span><span>${ICON.image}${state.photos.length} ภาพ</span>${a.created_by_name ? `<span>${ICON.user}${esc(a.created_by_name)}</span>` : ""}${audienceBadge(a)}</div>
         ${a.description ? `<p class="album-desc">${esc(a.description)}</p>` : ""}</div>
       <div class="tools">
         ${state.photos.length ? `<button class="btn ghost sm" id="dlAlbum">${ICON.download} ดาวน์โหลดอัลบั้ม</button>` : ""}

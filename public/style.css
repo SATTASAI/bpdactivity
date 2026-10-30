@@ -234,3 +234,9 @@ label.field[hidden] { display: none; }
 .photo.picked .tick { background: var(--primary); }
 .dl-parts { display: grid; gap: 8px; margin-bottom: 8px; }
 .dl-parts .btn { justify-content: flex-start; }
+
+/* Audience */
+.aud-filter { border: 1px solid #d9e1ec; border-radius: 30px; padding: 11px 16px; background: white; font: inherit; color: inherit; }
+.meta .aud-badge { font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; }
+.aud-staff { background: #e6f0ff; color: #0b4aa2; }
+.aud-private { background: #fdecef; color: #b4234a; }
