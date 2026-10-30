@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ภาพกิจกรรม · โรงเรียนบ้านป่าเด็ง</title>
+  <meta name="description" content="ภาพกิจกรรมโรงเรียนบ้านป่าเด็ง">
+  <meta name="theme-color" content="#3730a3">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l5-4.5 3.5 3 3-2.5L20 17"/></svg>
+      </span>
+      <span><b>ภาพกิจกรรม</b><small>โรงเรียนบ้านป่าเด็ง</small></span>
+    </a>
+    <div class="top-actions" id="topActions"></div>
+  </header>
+
+  <main id="app" class="container"></main>
+
+  <!-- กล่องโต้ตอบ (ใช้ร่วมกัน) -->
+  <dialog id="dialog"><form method="dialog" id="dialogForm"></form></dialog>
+
+  <!-- ดูภาพขนาดใหญ่ -->
+  <div id="lightbox" class="lightbox" hidden>
+    <button class="lb-btn lb-close" data-lb="close" aria-label="ปิด">
+      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    <button class="lb-btn lb-prev" data-lb="prev" aria-label="ภาพก่อนหน้า">
+      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+    <img id="lbImg" alt="">
+    <button class="lb-btn lb-next" data-lb="next" aria-label="ภาพถัดไป">
+      <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
+    <div class="lb-bar"><span id="lbCount"></span><a id="lbDownload" href="#">ดาวน์โหลด</a></div>
+  </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
