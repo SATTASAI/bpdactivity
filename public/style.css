@@ -213,3 +213,24 @@ label.field input:focus { border-color: var(--primary); }
   .hide-sm { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; } }
+
+/* แก้ไขอัลบั้ม / เลือกภาพ / ดาวน์โหลด / อัพโหลดจากหน้ารวม */
+label.field textarea, label.field select { display: block; width: 100%; margin-top: 5px; padding: 10px 12px; border-radius: 7px; border: 1px solid var(--line); color: var(--ink); font: inherit; font-size: 16px; background: #fff; }
+label.field textarea { resize: vertical; }
+label.field textarea:focus, label.field select:focus { border-color: var(--primary); outline: 0; }
+label.field[hidden] { display: none; }
+.seg { display: flex; gap: 8px; margin-bottom: 14px; }
+.seg label { flex: 1; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; font-size: 14px; cursor: pointer; }
+.seg label:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); font-weight: 600; }
+.album-desc { margin: 10px 0 0; color: var(--ink); white-space: pre-line; max-width: 70ch; font-size: 15px; line-height: 1.7; }
+.btn.on { background: var(--primary-soft); border-color: var(--primary); }
+.select-bar { position: sticky; top: var(--header-height); z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--primary); border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; box-shadow: 0 6px 18px rgba(8, 45, 98, .08); }
+.select-bar > span { margin-right: auto; font-size: 14px; }
+.photos.selecting .photo { cursor: pointer; }
+.photo.picked { outline: 3px solid var(--primary); outline-offset: -3px; }
+.photo.picked img { opacity: .82; }
+.photo.locked { opacity: .45; cursor: not-allowed; }
+.photo .tick { position: absolute; top: 8px; left: 8px; width: 26px; height: 26px; border-radius: 50%; border: 2px solid #fff; background: rgba(0, 0, 0, .25); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 15px; }
+.photo.picked .tick { background: var(--primary); }
+.dl-parts { display: grid; gap: 8px; margin-bottom: 8px; }
+.dl-parts .btn { justify-content: flex-start; }

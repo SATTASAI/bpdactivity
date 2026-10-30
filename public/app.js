@@ -2,11 +2,11 @@
 const $ = (sel, el = document) => el.querySelector(sel);
 const app = $("#app");
 $(".skip-link").onclick = (e) => { e.preventDefault(); app.focus(); };
-const state = { user: null, list: { q: "", page: 1, albums: [], hasMore: false }, sidebar: { albums: [], page: 1, hasMore: false, loading: false }, album: null, photos: [], viewVersion: 0, listRequest: 0 };
+const state = { selecting: false, selected: new Set(), user: null, list: { q: "", page: 1, albums: [], hasMore: false }, sidebar: { albums: [], page: 1, hasMore: false, loading: false }, album: null, photos: [], viewVersion: 0, listRequest: 0 };
 
 // Feather icons (MIT), served locally without a third-party runtime dependency.
 const icon = (name) => `<svg aria-hidden="true"><use href="/icons.svg#${name}"/></svg>`;
-const ICON = Object.fromEntries(Object.entries({ search: "search", image: "image", calendar: "calendar", user: "user", plus: "plus", upload: "upload", edit: "edit-2", trash: "trash-2", star: "star", back: "chevron-left", login: "log-in", logout: "log-out", arrow: "arrow-right" }).map(([key, name]) => [key, icon(name)]));
+const ICON = Object.fromEntries(Object.entries({ search: "search", image: "image", calendar: "calendar", user: "user", plus: "plus", upload: "upload", edit: "edit-2", trash: "trash-2", star: "star", back: "chevron-left", login: "log-in", logout: "log-out", arrow: "arrow-right", download: "download", select: "check-square", folder: "folder" }).map(([key, name]) => [key, icon(name)]));
 
 const MONTHS = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
 const thaiDate = (iso) => { const [y, m, d] = String(iso).split("-").map(Number); return `${d} ${MONTHS[m - 1]} ${y + 543}`; };
@@ -67,21 +67,64 @@ function loginDialog() {
 
 function albumDialog(album) {
   const editing = !!album;
-  openDialog(`<h2>${editing ? "แก้ไขชื่องาน" : "สร้างงานใหม่"}</h2>
-    <p class="hint">${editing ? "ชื่อโฟลเดอร์ใน Drive จะเปลี่ยนตาม (วันที่เดิมคงไว้)" : "ระบบสร้างโฟลเดอร์ใน Drive ชื่อ “ชื่องาน (วันที่วันนี้)” ให้อัตโนมัติ"}</p>
+  openDialog(`<h2>${editing ? "แก้ไขอัลบั้ม" : "สร้างงานใหม่"}</h2>
+    <p class="hint">${editing ? "ชื่อโฟลเดอร์ใน Drive จะเปลี่ยนตามชื่องานและวันที่" : "ระบบสร้างโฟลเดอร์ใน Drive ชื่อ “ชื่องาน (วันที่วันนี้)” ให้อัตโนมัติ"}</p>
     <label class="field">ชื่องาน<input name="title" maxlength="150" required value="${esc(album?.title || "")}" placeholder="เช่น กีฬาสีภายใน"></label>
+    ${editing ? `<label class="field">วันที่จัดงาน<input name="event_date" type="date" required value="${esc(album.event_date)}"></label>
+    <label class="field">คำอธิบายงาน<textarea name="description" rows="4" maxlength="2000" placeholder="รายละเอียดกิจกรรม (ไม่บังคับ)">${esc(album.description || "")}</textarea></label>` : ""}
     <p class="err"></p>
     <div class="dlg-actions"><button class="btn ghost" value="cancel" formnovalidate>ยกเลิก</button><button class="btn" value="ok">${editing ? "บันทึก" : "สร้างงาน"}</button></div>`,
   async (fd) => {
     const title = String(fd.get("title") || "").trim();
     if (editing) {
-      await api(`/api/albums/${album.id}`, { method: "PATCH", body: { title } });
+      await api(`/api/albums/${album.id}`, { method: "PATCH", body: { title, event_date: fd.get("event_date"), description: fd.get("description") } });
       toast("บันทึกแล้ว"); loadAlbum(album.id); loadSidebar();
     } else {
       const res = await api("/api/albums", { method: "POST", body: { title } });
       toast("สร้างงานแล้ว เลือกภาพเพื่ออัพโหลดได้เลย"); loadSidebar();
       location.hash = `#/album/${res.album.id}`;
     }
+  });
+}
+
+// เลือกอัลบั้ม (ใช้ตอนอัพโหลดจากหน้ารวม และตอนย้ายภาพ)
+async function albumOptionsHtml(excludeId) {
+  const { albums } = await api("/api/album-options");
+  return albums.filter((a) => a.id !== excludeId)
+    .map((a) => `<option value="${a.id}">${esc(a.title)} · ${thaiDate(a.event_date)}</option>`).join("");
+}
+
+// อัพโหลดจากหน้ารวม: เลือกอัลบั้มเดิมหรือสร้างใหม่ + เลือกภาพ (ไม่จำกัดจำนวน)
+async function quickUploadDialog() {
+  if (!state.user) return loginDialog();
+  let options = "";
+  try { options = await albumOptionsHtml(); } catch (x) { return toast(x.message, true); }
+  openDialog(`<h2>อัพโหลดภาพ</h2><p class="hint">เลือกได้หลายภาพพร้อมกัน ไม่จำกัดจำนวน · ภาพเก็บใน Google Drive โฟลเดอร์ของงาน</p>
+    <div class="seg"><label><input type="radio" name="mode" value="new" checked> สร้างงานใหม่</label><label><input type="radio" name="mode" value="old"> อัลบั้มเดิม</label></div>
+    <label class="field" data-mode="new">ชื่องาน<input name="title" maxlength="150" placeholder="เช่น กีฬาสีภายใน"></label>
+    <label class="field" data-mode="old" hidden>อัลบั้ม<select name="album">${options}</select></label>
+    <label class="field">ภาพ<input name="files" type="file" accept="image/*" multiple required></label>
+    <p class="err"></p>
+    <div class="dlg-actions"><button class="btn ghost" value="cancel" formnovalidate>ยกเลิก</button><button class="btn" value="ok">${ICON.upload} อัพโหลด</button></div>`,
+  async (fd) => {
+    const files = fd.getAll("files").filter((f) => f && f.size);
+    if (!files.length) throw new Error("กรุณาเลือกภาพ");
+    let albumId;
+    if (fd.get("mode") === "old") {
+      albumId = Number(fd.get("album"));
+      if (!albumId) throw new Error("กรุณาเลือกอัลบั้ม");
+    } else {
+      const title = String(fd.get("title") || "").trim();
+      if (!title) throw new Error("กรุณากรอกชื่องาน");
+      albumId = (await api("/api/albums", { method: "POST", body: { title } })).album.id;
+    }
+    location.hash = `#/album/${albumId}`;
+    uploadFiles(files, albumId);
+  });
+  const form = $("#dialogForm");
+  form.querySelectorAll('input[name="mode"]').forEach((r) => r.onchange = () => {
+    const mode = form.querySelector('input[name="mode"]:checked').value;
+    form.querySelectorAll("[data-mode]").forEach((el) => { el.hidden = el.dataset.mode !== mode; });
   });
 }
 
@@ -212,7 +255,8 @@ function renderList() {
   app.innerHTML = `<section class="hero">
       <div><h1>ภาพกิจกรรมโรงเรียน</h1><p>รวมภาพกิจกรรมของโรงเรียนบ้านป่าเด็ง</p></div>
       <div class="tools"><label class="search">${ICON.search}<input id="q" type="search" aria-label="ค้นหาชื่องาน" placeholder="ค้นหาชื่องาน" value="${esc(state.list.q)}"></label>
-        ${state.user ? `<button class="btn" id="newAlbum">${ICON.plus} สร้างงานใหม่</button>` : ""}</div>
+        <button class="btn" id="quickUpload">${ICON.upload} อัพโหลดภาพ</button>
+        ${state.user ? `<button class="btn ghost" id="newAlbum">${ICON.plus} สร้างงานใหม่</button>` : ""}</div>
     </section>
     <div id="listBody" aria-busy="true"><div class="empty" role="status">กำลังโหลด…</div></div>
     <footer class="page-footer">ภาพกิจกรรม · โรงเรียนบ้านป่าเด็ง</footer>`;
@@ -226,6 +270,7 @@ function renderList() {
     }); }, 300);
   };
   if (state.user) $("#newAlbum").onclick = () => albumDialog(null);
+  $("#quickUpload").onclick = quickUploadDialog;
   loadList().catch((x) => {
     if (view !== state.viewVersion) return;
     $("#listBody").setAttribute("aria-busy", "false");
@@ -273,24 +318,53 @@ function renderAlbum() {
   const a = state.album;
   const manage = canManage();
   const coverId = a.cover_photo_id || state.photos[0]?.id;
+  const selectable = state.photos.filter(canDelete);
+  if (!selectable.length) state.selecting = false;
+  const sel = state.selected;
   app.innerHTML = `<a class="back" href="#/">${ICON.back} กลับหน้ารวม</a>
     <section class="album-head">
       <div><h1>${esc(a.title)}</h1>
-        <div class="meta"><span>${ICON.calendar}${thaiDate(a.event_date)}</span><span>${ICON.image}${state.photos.length} ภาพ</span>${a.created_by_name ? `<span>${ICON.user}${esc(a.created_by_name)}</span>` : ""}</div></div>
-      ${manage ? `<div class="tools"><button class="btn ghost sm" id="editAlbum">${ICON.edit} แก้ไขชื่อ</button><button class="btn danger sm" id="delAlbum">${ICON.trash} ลบงาน</button></div>` : ""}
+        <div class="meta"><span>${ICON.calendar}${thaiDate(a.event_date)}</span><span>${ICON.image}${state.photos.length} ภาพ</span>${a.created_by_name ? `<span>${ICON.user}${esc(a.created_by_name)}</span>` : ""}</div>
+        ${a.description ? `<p class="album-desc">${esc(a.description)}</p>` : ""}</div>
+      <div class="tools">
+        ${state.photos.length ? `<button class="btn ghost sm" id="dlAlbum">${ICON.download} ดาวน์โหลดอัลบั้ม</button>` : ""}
+        ${selectable.length ? `<button class="btn ghost sm${state.selecting ? " on" : ""}" id="selectMode">${ICON.select} ${state.selecting ? "เลิกเลือก" : "เลือกภาพ"}</button>` : ""}
+        ${manage ? `<button class="btn ghost sm" id="editAlbum">${ICON.edit} แก้ไขอัลบั้ม</button><button class="btn danger sm" id="delAlbum">${ICON.trash} ลบงาน</button>` : ""}
+      </div>
     </section>
-    ${state.user ? `<div class="dropzone" id="drop">${ICON.upload}<div><b>เลือกภาพ</b> หรือลากภาพมาวางที่นี่</div><small>JPG, PNG, WEBP, HEIC · ไม่เกิน 25 MB ต่อภาพ</small>
+    ${state.selecting ? `<div class="select-bar" role="toolbar" aria-label="จัดการภาพที่เลือก">
+      <span><b id="selCount">${sel.size}</b> ภาพที่เลือก</span>
+      <button class="btn ghost sm" id="selAll">${sel.size === selectable.length ? "ไม่เลือกทั้งหมด" : "เลือกทั้งหมด"}</button>
+      <button class="btn ghost sm" id="selMove" ${sel.size ? "" : "disabled"}>${ICON.folder} ย้ายไปอัลบั้มอื่น</button>
+      <button class="btn danger sm" id="selDelete" ${sel.size ? "" : "disabled"}>${ICON.trash} ลบที่เลือก</button>
+    </div>` : ""}
+    ${state.user ? `<div class="dropzone" id="drop">${ICON.upload}<div><b>เลือกภาพ</b> หรือลากภาพมาวางที่นี่ (เลือกได้ไม่จำกัดจำนวน)</div><small>JPG, PNG, WEBP, HEIC · ไม่เกิน 25 MB ต่อภาพ</small>
       <input id="files" type="file" accept="image/*" multiple hidden></div><div id="progress"></div>` : ""}
-    ${state.photos.length ? `<div class="photos">${state.photos.map((p, i) => `
-      <div class="photo" data-i="${i}" tabindex="0" role="button" aria-label="ดูภาพ ${i + 1}: ${esc(p.file_name)}">
+    ${state.photos.length ? `<div class="photos${state.selecting ? " selecting" : ""}">${state.photos.map((p, i) => `
+      <div class="photo${sel.has(p.id) ? " picked" : ""}${state.selecting && !canDelete(p) ? " locked" : ""}" data-i="${i}" data-id="${p.id}" tabindex="0" role="button" aria-label="${state.selecting ? "เลือก" : "ดู"}ภาพ ${i + 1}: ${esc(p.file_name)}"${state.selecting ? ` aria-pressed="${sel.has(p.id)}"` : ""}>
         <img src="/img/${p.id}/thumb" alt="${esc(p.file_name)}" loading="lazy">
-        ${p.id === coverId ? `<span class="badge">ภาพปก</span>` : ""}
-        ${state.user ? `<div class="ph-actions">
+        ${state.selecting && canDelete(p) ? `<span class="tick" aria-hidden="true">${sel.has(p.id) ? "✓" : ""}</span>` : ""}
+        ${p.id === coverId && !state.selecting ? `<span class="badge">ภาพปก</span>` : ""}
+        ${state.user && !state.selecting ? `<div class="ph-actions">
           ${manage && p.id !== coverId ? `<button data-cover="${p.id}" title="ตั้งเป็นภาพปก">${ICON.star}</button>` : ""}
           ${canDelete(p) ? `<button class="del" data-del="${p.id}" title="ลบภาพ">${ICON.trash}</button>` : ""}
         </div>` : ""}
       </div>`).join("")}</div>` : `<div class="empty">ยังไม่มีภาพในงานนี้</div>`}`;
 
+  if ($("#dlAlbum")) $("#dlAlbum").onclick = () => downloadAlbum(a);
+  if ($("#selectMode")) $("#selectMode").onclick = () => { state.selecting = !state.selecting; state.selected.clear(); renderAlbum(); };
+  if (state.selecting) {
+    $("#selAll").onclick = () => {
+      if (sel.size === selectable.length) sel.clear(); else selectable.forEach((p) => sel.add(p.id));
+      renderAlbum();
+    };
+    $("#selDelete").onclick = async () => {
+      const ids = [...sel];
+      if (!await confirmBox(`ลบ ${ids.length} ภาพ?`, "ภาพจะถูกย้ายไปถังขยะใน Drive (กู้คืนได้ภายใน 30 วัน)", "ลบภาพ")) return;
+      await bulkAction("/api/photos/delete", { ids }, (r) => `ลบแล้ว ${r.deleted} ภาพ`);
+    };
+    $("#selMove").onclick = () => moveDialog([...sel]);
+  }
   if (manage) {
     $("#editAlbum").onclick = () => albumDialog(a);
     $("#delAlbum").onclick = async () => {
@@ -302,6 +376,16 @@ function renderAlbum() {
   if (state.user) bindUpload();
 
   $(".photos")?.addEventListener("click", async (e) => {
+    const tile = e.target.closest(".photo");
+    if (state.selecting) {
+      if (!tile) return;
+      const id = Number(tile.dataset.id), p = state.photos[Number(tile.dataset.i)];
+      if (!canDelete(p)) return toast("เลือกได้เฉพาะภาพที่คุณมีสิทธิ์จัดการ", true);
+      sel.has(id) ? sel.delete(id) : sel.add(id);
+      renderAlbum();
+      $(`.photo[data-id="${id}"]`)?.focus();
+      return;
+    }
     const cover = e.target.closest("[data-cover]"), del = e.target.closest("[data-del]");
     if (cover) {
       e.stopPropagation();
@@ -316,19 +400,51 @@ function renderAlbum() {
       catch (x) { toast(x.message, true); }
       return;
     }
-    const tile = e.target.closest(".photo");
     if (tile) openLightbox(Number(tile.dataset.i));
   });
+}
+
+async function bulkAction(path, body, okText) {
+  try {
+    const r = await api(path, { method: "POST", body });
+    toast(r.failed ? `${okText(r)} · ไม่สำเร็จ ${r.failed} ภาพ${r.error ? ` (${r.error})` : ""}` : okText(r), !!r.failed);
+  } catch (x) { toast(x.message, true); }
+  state.selecting = false; state.selected.clear();
+  loadAlbum(state.album.id); loadSidebar();
+}
+
+async function moveDialog(ids) {
+  let options = "";
+  try { options = await albumOptionsHtml(state.album.id); } catch (x) { return toast(x.message, true); }
+  if (!options) return toast("ยังไม่มีอัลบั้มอื่นให้ย้ายไป", true);
+  openDialog(`<h2>ย้าย ${ids.length} ภาพ</h2><p class="hint">ไฟล์ใน Google Drive จะย้ายไปโฟลเดอร์ของอัลบั้มปลายทางด้วย</p>
+    <label class="field">ย้ายไปอัลบั้ม<select name="album" required>${options}</select></label>
+    <p class="err"></p>
+    <div class="dlg-actions"><button class="btn ghost" value="cancel" formnovalidate>ยกเลิก</button><button class="btn" value="ok">${ICON.folder} ย้ายภาพ</button></div>`,
+  async (fd) => { await bulkAction("/api/photos/move", { ids, album_id: Number(fd.get("album")) }, (r) => `ย้ายแล้ว ${r.moved} ภาพ`); });
+}
+
+// ดาวน์โหลดทั้งอัลบั้มเป็น .zip (อัลบั้มใหญ่แบ่งเป็นหลายไฟล์)
+const sizeText = (b) => b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1048576))} MB`;
+async function downloadAlbum(a) {
+  try {
+    const { parts } = await api(`/api/albums/${a.id}/download`);
+    if (!parts.length) return toast("ยังไม่มีภาพในอัลบั้มนี้", true);
+    if (parts.length === 1) { location.href = parts[0].url; return toast("เริ่มดาวน์โหลดแล้ว อัลบั้มใหญ่อาจใช้เวลาสักครู่"); }
+    openDialog(`<h2>ดาวน์โหลดอัลบั้ม</h2><p class="hint">อัลบั้มนี้ใหญ่ จึงแบ่งเป็น ${parts.length} ไฟล์ — กดดาวน์โหลดทีละไฟล์</p>
+      <div class="dl-parts">${parts.map((p) => `<a class="btn ghost" href="${p.url}">${ICON.download} ส่วนที่ ${p.part} · ${p.count} ภาพ · ~${sizeText(p.bytes)}</a>`).join("")}</div>
+      <div class="dlg-actions"><button class="btn ghost" value="cancel" formnovalidate>ปิด</button></div>`, async () => {});
+  } catch (x) { toast(x.message, true); }
 }
 
 // ---------- อัพโหลด (ทีละไฟล์ พร้อมกัน 3 ไฟล์) ----------
 function bindUpload() {
   const drop = $("#drop"), input = $("#files");
   drop.onclick = () => input.click();
-  input.onchange = () => { uploadFiles([...input.files]); input.value = ""; };
+  input.onchange = () => { uploadFiles([...input.files], state.album.id); input.value = ""; };
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
   drop.ondragleave = () => drop.classList.remove("over");
-  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); uploadFiles([...e.dataTransfer.files]); };
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); uploadFiles([...e.dataTransfer.files], state.album.id); };
 }
 
 function uploadOne(albumId, file, onProgress) {
@@ -347,17 +463,16 @@ function uploadOne(albumId, file, onProgress) {
 }
 
 let uploading = false;
-async function uploadFiles(files) {
+async function uploadFiles(files, albumId) {
   const images = files.filter((f) => f.type.startsWith("image/") || /\.(heic|heif)$/i.test(f.name));
   if (!images.length) return toast("กรุณาเลือกไฟล์ภาพ", true);
   if (uploading) return toast("กำลังอัพโหลดชุดก่อนหน้า กรุณารอสักครู่", true);
   uploading = true;
-  const albumId = state.album.id;
-  const box = $("#progress");
   const progress = new Array(images.length).fill(0);
   let done = 0; const failed = [];
   const paint = () => {
     const pct = Math.round(progress.reduce((s, v) => s + v, 0) / images.length * 100);
+    const box = $("#progress"); if (!box || state.album?.id !== albumId) return;
     box.innerHTML = `<div class="progress">กำลังอัพโหลด ${done}/${images.length} ภาพ${failed.length ? ` · ไม่สำเร็จ ${failed.length}` : ""}<div class="bar"><i style="width:${pct}%"></i></div></div>`;
   };
   paint();
@@ -461,6 +576,7 @@ lb.addEventListener("touchcancel", () => { touch = null; }, { passive: true });
 // ---------- เส้นทาง ----------
 function route() {
   ++state.viewVersion;
+  state.selecting = false; state.selected.clear();
   if (!lb.hidden) closeLightbox();
   const m = location.hash.match(/^#\/album\/(\d+)/);
   if (m) { app.innerHTML = `<div class="empty">กำลังโหลด…</div>`; loadAlbum(Number(m[1])); }
