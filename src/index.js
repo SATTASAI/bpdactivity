@@ -173,7 +173,7 @@ async function listAlbums(url, env) {
         (SELECT p.id FROM activity_photos p WHERE p.album_id = a.id AND p.deleted_at IS NULL ORDER BY p.id LIMIT 1)
       ) AS cover_id
     FROM activity_albums a LEFT JOIN users u ON u.id = a.created_by
-    WHERE ${where} ORDER BY a.event_date ASC, a.id ASC LIMIT ? OFFSET ?`)
+    WHERE ${where} ORDER BY a.event_date DESC, a.id DESC LIMIT ? OFFSET ?`)
     .bind(...binds, PAGE_SIZE + 1, (page - 1) * PAGE_SIZE).all();
   const items = rows.results || [];
   return json({ albums: items.slice(0, PAGE_SIZE), has_more: items.length > PAGE_SIZE, page });

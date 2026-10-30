@@ -130,8 +130,8 @@ test("ซิงก์จาก Drive: ดึงอัลบั้ม+ภาพ �
   const r = await runSync(env);
   assert.equal(r.folders, 3);
   const albums = (await call("/api/albums")).data.albums;
-  assert.deepEqual(albums.map((a) => a.title), ["วันพ่อแห่งชาติ 2567", "งานใหม่", "ทอดผ้าป่าโรงเรียน 2569"]);
-  assert.deepEqual(albums.map((a) => a.event_date), ["2024-12-04", "2026-01-05", "2026-09-07"]);
+  assert.deepEqual(albums.map((a) => a.title), ["ทอดผ้าป่าโรงเรียน 2569", "งานใหม่", "วันพ่อแห่งชาติ 2567"]);
+  assert.deepEqual(albums.map((a) => a.event_date), ["2026-09-07", "2026-01-05", "2024-12-04"]);
   const pa = albums.find((a) => a.title.startsWith("ทอดผ้าป่า"));
   assert.equal(pa.photo_count, 2); // รวมภาพในโฟลเดอร์ย่อย
 
@@ -153,8 +153,8 @@ test("ซิงก์จาก Drive: ดึงอัลบั้ม+ภาพ �
   sql.exec("UPDATE activity_albums SET synced_at = NULL");
   await runSync(env);
   const after = (await call("/api/albums")).data.albums;
-  assert.deepEqual(after.map((a) => a.title), ["วันพ่อ 2567", "ทอดผ้าป่าโรงเรียน 2569"]);
-  assert.equal(after[1].photo_count, 2); // b.jpg + x.jpg ที่อัพผ่านเว็บ
+  assert.deepEqual(after.map((a) => a.title), ["ทอดผ้าป่าโรงเรียน 2569", "วันพ่อ 2567"]);
+  assert.equal(after[0].photo_count, 2); // b.jpg + x.jpg ที่อัพผ่านเว็บ
 });
 
 test("ย้ายตารางรุ่นแรก (created_by NOT NULL) ได้โดยข้อมูลไม่หาย", async () => {
