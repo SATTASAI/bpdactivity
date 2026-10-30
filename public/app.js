@@ -1,22 +1,12 @@
 // หน้าเว็บภาพกิจกรรม: #/ = รายการงาน, #/album/:id = ภาพในงาน
 const $ = (sel, el = document) => el.querySelector(sel);
 const app = $("#app");
-const state = { user: null, list: { q: "", page: 1, albums: [], hasMore: false }, album: null, photos: [] };
+$(".skip-link").onclick = (e) => { e.preventDefault(); app.focus(); };
+const state = { user: null, list: { q: "", page: 1, albums: [], hasMore: false }, sidebar: { albums: [], page: 1, hasMore: false, loading: false }, album: null, photos: [], viewVersion: 0, listRequest: 0 };
 
-const ICON = {
-  search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
-  image: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l5-4.5 3.5 3 3-2.5L20 17"/></svg>',
-  calendar: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
-  user: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
-  plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
-  upload: '<svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 16v2a3 3 0 003 3h10a3 3 0 003-3v-2"/></svg>',
-  edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4"/></svg>',
-  trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 002 2h6a2 2 0 002-2l1-12M9 7V4h6v3"/></svg>',
-  star: '<svg viewBox="0 0 24 24"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></svg>',
-  back: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>',
-  login: '<svg viewBox="0 0 24 24"><path d="M14 4h4a2 2 0 012 2v12a2 2 0 01-2 2h-4M10 16l4-4-4-4M14 12H3"/></svg>',
-  logout: '<svg viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 00-2 2v12a2 2 0 002 2h4M15 16l4-4-4-4M19 12H9"/></svg>',
-};
+// Feather icons (MIT), served locally without a third-party runtime dependency.
+const icon = (name) => `<svg aria-hidden="true"><use href="/icons.svg#${name}"/></svg>`;
+const ICON = Object.fromEntries(Object.entries({ search: "search", image: "image", calendar: "calendar", user: "user", plus: "plus", upload: "upload", edit: "edit-2", trash: "trash-2", star: "star", back: "chevron-left", login: "log-in", logout: "log-out", arrow: "arrow-right" }).map(([key, name]) => [key, icon(name)]));
 
 const MONTHS = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
 const thaiDate = (iso) => { const [y, m, d] = String(iso).split("-").map(Number); return `${d} ${MONTHS[m - 1]} ${y + 543}`; };
@@ -86,10 +76,10 @@ function albumDialog(album) {
     const title = String(fd.get("title") || "").trim();
     if (editing) {
       await api(`/api/albums/${album.id}`, { method: "PATCH", body: { title } });
-      toast("บันทึกแล้ว"); loadAlbum(album.id);
+      toast("บันทึกแล้ว"); loadAlbum(album.id); loadSidebar();
     } else {
       const res = await api("/api/albums", { method: "POST", body: { title } });
-      toast("สร้างงานแล้ว เลือกภาพเพื่ออัพโหลดได้เลย");
+      toast("สร้างงานแล้ว เลือกภาพเพื่ออัพโหลดได้เลย"); loadSidebar();
       location.hash = `#/album/${res.album.id}`;
     }
   });
@@ -108,56 +98,169 @@ function renderTop() {
   }
 }
 
+// ---------- เมนูอัลบั้ม ----------
+const layout = $("#layout"), sidebar = $("#albumSidebar");
+const narrowScreen = window.matchMedia("(max-width: 760px)");
+let collapsed = false;
+try { collapsed = localStorage.getItem("activity.sidebar.collapsed") === "true"; } catch {}
+let mobileOpen = false;
+function updateSidebarLayout() {
+  layout.classList.toggle("sidebar-collapsed", collapsed && !narrowScreen.matches);
+  layout.classList.toggle("sidebar-open", mobileOpen && narrowScreen.matches);
+  document.body.classList.toggle("menu-open", mobileOpen && narrowScreen.matches);
+  sidebar.inert = narrowScreen.matches && !mobileOpen;
+  app.inert = narrowScreen.matches && mobileOpen;
+  $("#topActions").inert = narrowScreen.matches && mobileOpen;
+  $("#sidebarScrim").hidden = !mobileOpen || !narrowScreen.matches;
+  $("#mobileMenu").setAttribute("aria-expanded", String(mobileOpen && narrowScreen.matches));
+  const expanded = narrowScreen.matches ? mobileOpen : !collapsed;
+  $("#sidebarToggle").setAttribute("aria-expanded", String(expanded));
+  $("#sidebarToggle").setAttribute("aria-label", expanded ? "ยุบเมนูอัลบั้ม" : "ขยายเมนูอัลบั้ม");
+  $("#sidebarToggle").title = expanded ? "ยุบเมนูอัลบั้ม" : "ขยายเมนูอัลบั้ม";
+  $("#sidebarCollapse").setAttribute("aria-label", expanded ? "ยุบเมนูอัลบั้ม" : "ขยายเมนูอัลบั้ม");
+  $("#sidebarCollapse span").textContent = expanded ? "ยุบแถบเมนู" : "ขยายแถบเมนู";
+}
+function closeMobileMenu(restoreFocus = false) {
+  mobileOpen = false; updateSidebarLayout();
+  if (restoreFocus && narrowScreen.matches) $("#mobileMenu").focus();
+}
+function toggleSidebar() {
+  if (narrowScreen.matches) closeMobileMenu(true);
+  else {
+    collapsed = !collapsed;
+    try { localStorage.setItem("activity.sidebar.collapsed", String(collapsed)); } catch {}
+    updateSidebarLayout();
+    $("#sidebarToggle").focus();
+  }
+}
+$("#sidebarToggle").onclick = toggleSidebar;
+$("#sidebarCollapse").onclick = toggleSidebar;
+$("#mobileMenu").onclick = () => {
+  mobileOpen = !mobileOpen; updateSidebarLayout();
+  if (mobileOpen) $("#sidebarToggle").focus();
+};
+$("#sidebarScrim").onclick = () => closeMobileMenu(true);
+narrowScreen.addEventListener("change", () => { mobileOpen = false; updateSidebarLayout(); });
+sidebar.addEventListener("click", (e) => { if (e.target.closest("a")) closeMobileMenu(); });
+updateSidebarLayout();
+
+function renderSidebar() {
+  const { albums, hasMore, loading } = state.sidebar;
+  const selected = location.hash.match(/^#\/album\/(\d+)$/)?.[1];
+  const all = $(".nav-all");
+  all.classList.toggle("selected", !selected);
+  if (!selected) all.setAttribute("aria-current", "page"); else all.removeAttribute("aria-current");
+  $("#sidebarAlbums").innerHTML = albums.map(a => `<a class="sidebar-album${String(a.id) === selected ? " selected" : ""}" href="#/album/${a.id}" ${String(a.id) === selected ? 'aria-current="page"' : ""} title="${esc(a.title)}">
+      <span class="sidebar-thumb">${a.cover_id ? `<img src="/img/${a.cover_id}/thumb" alt="" loading="lazy">` : ICON.image}</span>
+      <span class="sidebar-album-info"><b>${esc(a.title)}</b><small>${thaiDate(a.event_date)}</small><small>${ICON.image}${a.photo_count} ภาพ</small></span>
+    </a>`).join("") + (!albums.length ? `<p class="sidebar-message">${loading ? "กำลังโหลด…" : "ยังไม่มีอัลบั้ม"}</p>` : "") +
+    (hasMore ? `<button class="sidebar-more" id="sidebarMore" ${loading ? "disabled" : ""}>${loading ? "กำลังโหลด…" : "ดูอัลบั้มเพิ่มเติม"}</button>` : "");
+  if ($("#sidebarMore")) $("#sidebarMore").onclick = () => loadSidebar(true);
+}
+let sidebarRequest = 0;
+async function loadSidebar(append = false) {
+  const request = ++sidebarRequest;
+  const page = append ? state.sidebar.page + 1 : 1;
+  state.sidebar.loading = true; renderSidebar();
+  try {
+    const data = await api(`/api/albums?page=${page}`);
+    if (request !== sidebarRequest) return;
+    state.sidebar.albums = append ? state.sidebar.albums.concat(data.albums) : data.albums;
+    state.sidebar.page = page; state.sidebar.hasMore = data.has_more;
+    state.sidebar.loading = false; renderSidebar();
+  } catch (x) {
+    if (request !== sidebarRequest) return;
+    state.sidebar.loading = false;
+    renderSidebar();
+    const error = document.createElement("p"); error.className = "sidebar-message"; error.textContent = x.message;
+    const retry = document.createElement("button"); retry.className = "sidebar-more"; retry.textContent = "ลองอีกครั้ง";
+    retry.onclick = () => loadSidebar(append);
+    if (!state.sidebar.albums.length) $("#sidebarAlbums").replaceChildren();
+    $("#sidebarAlbums").append(error, retry);
+  }
+}
+
 // ---------- หน้ารายการงาน ----------
+function albumMeta(a) {
+  return `<div class="meta"><span>${ICON.calendar}${thaiDate(a.event_date)}</span><span>${ICON.image}${a.photo_count} ภาพ</span></div>`;
+}
 function albumCard(a) {
   const cover = a.cover_id ? `<img src="/img/${a.cover_id}/thumb" alt="" loading="lazy">` : ICON.image;
   return `<a class="album" href="#/album/${a.id}">
     <div class="cover">${cover}</div>
-    <div class="album-body"><h3>${esc(a.title)}</h3>
-      <div class="meta"><span>${ICON.calendar}${thaiDate(a.event_date)}</span><span>${ICON.image}${a.photo_count} ภาพ</span></div>
+    <div class="album-body"><h3>${esc(a.title)}</h3>${albumMeta(a)}</div></a>`;
+}
+function featuredAlbum(a) {
+  return `<a class="featured" href="#/album/${a.id}">
+    <div class="featured-cover">${a.cover_id ? `<img src="/img/${a.cover_id}/thumb" alt="" fetchpriority="high">` : ICON.image}</div>
+    <div class="featured-copy"><span class="eyebrow">อัลบั้มล่าสุด</span><h2>${esc(a.title)}</h2><p>บันทึกภาพกิจกรรมและความทรงจำของโรงเรียนบ้านป่าเด็ง</p>
+      <div class="featured-bottom">${albumMeta(a)}<span class="album-open" aria-label="ดูอัลบั้ม">${ICON.arrow}</span></div>
     </div></a>`;
 }
-
 async function loadList(append = false) {
-  const { q, page } = state.list;
+  const { q } = state.list;
+  const page = append ? state.list.page + 1 : 1;
+  const view = state.viewVersion, request = ++state.listRequest;
   const data = await api(`/api/albums?page=${page}${q ? `&q=${encodeURIComponent(q)}` : ""}`);
+  if (view !== state.viewVersion || request !== state.listRequest) return;
   state.list.albums = append ? state.list.albums.concat(data.albums) : data.albums;
-  state.list.hasMore = data.has_more;
+  state.list.page = page; state.list.hasMore = data.has_more;
   renderListBody();
 }
-
 function renderList() {
+  state.album = null;
   app.innerHTML = `<section class="hero">
       <div><h1>ภาพกิจกรรมโรงเรียน</h1><p>รวมภาพกิจกรรมของโรงเรียนบ้านป่าเด็ง</p></div>
-      <div class="tools">
-        <label class="search">${ICON.search}<input id="q" type="search" placeholder="ค้นหาชื่องาน" value="${esc(state.list.q)}"></label>
-        ${state.user ? `<button class="btn" id="newAlbum">${ICON.plus} สร้างงานใหม่</button>` : ""}
-      </div>
+      <div class="tools"><label class="search">${ICON.search}<input id="q" type="search" aria-label="ค้นหาชื่องาน" placeholder="ค้นหาชื่องาน" value="${esc(state.list.q)}"></label>
+        ${state.user ? `<button class="btn" id="newAlbum">${ICON.plus} สร้างงานใหม่</button>` : ""}</div>
     </section>
-    <div id="listBody"><div class="empty">กำลังโหลด…</div></div>`;
+    <div id="listBody" aria-busy="true"><div class="empty" role="status">กำลังโหลด…</div></div>
+    <footer class="page-footer">ภาพกิจกรรม · โรงเรียนบ้านป่าเด็ง</footer>`;
   let t;
-  $("#q").oninput = (e) => { clearTimeout(t); t = setTimeout(() => { state.list.q = e.target.value.trim(); state.list.page = 1; loadList().catch((x) => toast(x.message, true)); }, 300); };
+  const view = state.viewVersion;
+  $("#q").oninput = (e) => {
+    clearTimeout(t); state.list.q = e.target.value.trim(); ++state.listRequest;
+    $("#listBody").setAttribute("aria-busy", "true");
+    t = setTimeout(() => { if (view === state.viewVersion) loadList().catch(x => {
+      if (view === state.viewVersion) { $("#listBody").setAttribute("aria-busy", "false"); toast(x.message, true); }
+    }); }, 300);
+  };
   if (state.user) $("#newAlbum").onclick = () => albumDialog(null);
-  state.list.page = 1;
-  loadList().catch((x) => { $("#listBody").innerHTML = `<div class="empty">${esc(x.message)}</div>`; });
+  loadList().catch((x) => {
+    if (view !== state.viewVersion) return;
+    $("#listBody").setAttribute("aria-busy", "false");
+    $("#listBody").innerHTML = `<div class="empty" role="status">${esc(x.message)}<button class="btn ghost" id="retryList">ลองอีกครั้ง</button></div>`;
+    $("#retryList").onclick = renderList;
+  });
 }
-
 function renderListBody() {
   const body = $("#listBody"); if (!body) return;
   const { albums, hasMore, q } = state.list;
-  if (!albums.length) { body.innerHTML = `<div class="empty">${q ? "ไม่พบงานที่ค้นหา" : "ยังไม่มีภาพกิจกรรม"}</div>`; return; }
-  body.innerHTML = `<div class="grid">${albums.map(albumCard).join("")}</div>
+  body.setAttribute("aria-busy", "false");
+  if (!albums.length) {
+    body.innerHTML = `<div class="empty" role="status">${ICON.image}<h2>${q ? "ไม่พบงานที่ค้นหา" : "ยังไม่มีภาพกิจกรรม"}</h2><p>${q ? "ลองค้นหาด้วยชื่อกิจกรรมอื่น" : "เมื่อครูเพิ่มอัลบั้ม ภาพกิจกรรมจะแสดงที่นี่"}</p></div>`;
+    return;
+  }
+  const otherAlbums = q ? albums : albums.slice(1);
+  body.innerHTML = `${!q ? featuredAlbum(albums[0]) : ""}${otherAlbums.length ? `<section class="album-section" aria-label="${q ? "ผลการค้นหา" : "อัลบั้มทั้งหมด"}">
+    <h2 class="section-title">${q ? "ผลการค้นหา" : "อัลบั้มทั้งหมด"}</h2><div class="grid">${otherAlbums.map(albumCard).join("")}</div></section>` : ""}
     ${hasMore ? `<div class="more"><button class="btn ghost" id="moreBtn">ดูเพิ่มเติม</button></div>` : ""}`;
-  if (hasMore) $("#moreBtn").onclick = () => { state.list.page++; loadList(true).catch((x) => toast(x.message, true)); };
+  if (hasMore) $("#moreBtn").onclick = async (e) => {
+    e.currentTarget.disabled = true;
+    try { await loadList(true); } catch (x) { if ($("#moreBtn")) $("#moreBtn").disabled = false; toast(x.message, true); }
+  };
 }
 
 // ---------- หน้างาน ----------
 async function loadAlbum(id) {
+  const view = state.viewVersion;
   try {
     const data = await api(`/api/albums/${id}`);
+    if (view !== state.viewVersion) return;
     state.album = data.album; state.photos = data.photos;
     renderAlbum();
   } catch (x) {
+    if (view !== state.viewVersion) return;
     app.innerHTML = `<a class="back" href="#/">${ICON.back} กลับหน้ารวม</a><div class="empty">${esc(x.message)}</div>`;
   }
 }
@@ -179,7 +282,7 @@ function renderAlbum() {
     ${state.user ? `<div class="dropzone" id="drop">${ICON.upload}<div><b>เลือกภาพ</b> หรือลากภาพมาวางที่นี่</div><small>JPG, PNG, WEBP, HEIC · ไม่เกิน 25 MB ต่อภาพ</small>
       <input id="files" type="file" accept="image/*" multiple hidden></div><div id="progress"></div>` : ""}
     ${state.photos.length ? `<div class="photos">${state.photos.map((p, i) => `
-      <div class="photo" data-i="${i}" tabindex="0">
+      <div class="photo" data-i="${i}" tabindex="0" role="button" aria-label="ดูภาพ ${i + 1}: ${esc(p.file_name)}">
         <img src="/img/${p.id}/thumb" alt="${esc(p.file_name)}" loading="lazy">
         ${p.id === coverId ? `<span class="badge">ภาพปก</span>` : ""}
         ${state.user ? `<div class="ph-actions">
@@ -192,7 +295,7 @@ function renderAlbum() {
     $("#editAlbum").onclick = () => albumDialog(a);
     $("#delAlbum").onclick = async () => {
       if (!await confirmBox("ลบงานนี้?", `ภาพทั้งหมด ${state.photos.length} ภาพและโฟลเดอร์ใน Drive จะถูกย้ายไปถังขยะ (กู้คืนใน Drive ได้ภายใน 30 วัน)`, "ลบงาน")) return;
-      try { await api(`/api/albums/${a.id}`, { method: "DELETE" }); toast("ลบงานแล้ว"); location.hash = "#/"; }
+      try { await api(`/api/albums/${a.id}`, { method: "DELETE" }); toast("ลบงานแล้ว"); loadSidebar(); location.hash = "#/"; }
       catch (x) { toast(x.message, true); }
     };
   }
@@ -202,14 +305,14 @@ function renderAlbum() {
     const cover = e.target.closest("[data-cover]"), del = e.target.closest("[data-del]");
     if (cover) {
       e.stopPropagation();
-      try { await api(`/api/albums/${a.id}`, { method: "PATCH", body: { cover_photo_id: Number(cover.dataset.cover) } }); state.album.cover_photo_id = Number(cover.dataset.cover); renderAlbum(); toast("ตั้งภาพปกแล้ว"); }
+      try { await api(`/api/albums/${a.id}`, { method: "PATCH", body: { cover_photo_id: Number(cover.dataset.cover) } }); state.album.cover_photo_id = Number(cover.dataset.cover); renderAlbum(); loadSidebar(); toast("ตั้งภาพปกแล้ว"); }
       catch (x) { toast(x.message, true); }
       return;
     }
     if (del) {
       e.stopPropagation();
       if (!await confirmBox("ลบภาพนี้?", "ภาพจะถูกย้ายไปถังขยะใน Drive (กู้คืนได้ภายใน 30 วัน)", "ลบภาพ")) return;
-      try { await api(`/api/photos/${del.dataset.del}`, { method: "DELETE" }); toast("ลบภาพแล้ว"); loadAlbum(a.id); }
+      try { await api(`/api/photos/${del.dataset.del}`, { method: "DELETE" }); toast("ลบภาพแล้ว"); loadAlbum(a.id); loadSidebar(); }
       catch (x) { toast(x.message, true); }
       return;
     }
@@ -273,45 +376,102 @@ async function uploadFiles(files) {
   if (failed.length) toast(`อัพโหลดไม่สำเร็จ ${failed.length} ภาพ — ${failed[0]}`, true);
   else toast(`อัพโหลดครบ ${images.length} ภาพแล้ว`);
   if (state.album?.id === albumId) loadAlbum(albumId);
+  loadSidebar();
 }
 
 // ---------- ดูภาพขนาดใหญ่ ----------
-const lb = $("#lightbox"); let lbIndex = 0;
-function openLightbox(i) { lbIndex = i; showLb(); lb.hidden = false; document.body.style.overflow = "hidden"; }
-function closeLightbox() { lb.hidden = true; $("#lbImg").src = ""; document.body.style.overflow = ""; }
+const lb = $("#lightbox"); let lbIndex = 0, lbOpener = null;
+let previousOverflow = "";
+function openLightbox(i) {
+  if (!state.photos[i]) return;
+  lbIndex = i; lbOpener = document.activeElement;
+  previousOverflow = document.body.style.overflow;
+  lb.hidden = false; document.body.style.overflow = "hidden";
+  layout.inert = true; $(".topbar").inert = true;
+  showLb(); $(".lb-close").focus();
+}
+function closeLightbox() {
+  lb.hidden = true;
+  const img = $("#lbImg"); img.onload = img.onerror = null; img.removeAttribute("src");
+  layout.inert = false; $(".topbar").inert = false;
+  document.body.style.overflow = previousOverflow;
+  if (lbOpener?.isConnected) lbOpener.focus();
+}
 function showLb() {
   const p = state.photos[lbIndex]; if (!p) return;
-  $("#lbImg").src = `/img/${p.id}/full`;
+  const img = $("#lbImg"), status = $("#lbStatus");
+  img.hidden = true; img.alt = p.file_name || `ภาพที่ ${lbIndex + 1}`;
+  status.hidden = false; status.textContent = "กำลังโหลดภาพ…";
+  lb.setAttribute("aria-busy", "true");
+  img.onload = () => { img.hidden = false; status.hidden = true; lb.setAttribute("aria-busy", "false"); };
+  img.onerror = () => { status.textContent = "โหลดภาพไม่สำเร็จ ลองเปิดภาพนี้อีกครั้ง"; lb.setAttribute("aria-busy", "false"); };
+  img.src = `/img/${p.id}/full`;
   $("#lbCount").textContent = `${lbIndex + 1} / ${state.photos.length}`;
+  $("#lbName").textContent = p.file_name;
   $("#lbDownload").href = `/img/${p.id}/full?download=1`;
+  $(".lb-prev").hidden = $(".lb-next").hidden = state.photos.length < 2;
 }
-const step = (d) => { lbIndex = (lbIndex + d + state.photos.length) % state.photos.length; showLb(); };
+const step = (d) => {
+  if (state.photos.length < 2) return;
+  lbIndex = (lbIndex + d + state.photos.length) % state.photos.length; showLb();
+};
 lb.addEventListener("click", (e) => {
   const b = e.target.closest("[data-lb]");
   if (b) ({ close: closeLightbox, prev: () => step(-1), next: () => step(1) })[b.dataset.lb]();
   else if (e.target === lb) closeLightbox();
 });
+app.addEventListener("keydown", (e) => {
+  const tile = e.target.closest(".photo");
+  if (tile && e.target === tile && (e.key === "Enter" || e.key === " ")) {
+    e.preventDefault(); openLightbox(Number(tile.dataset.i));
+  }
+});
+function trapTab(e, root) {
+  const controls = [...root.querySelectorAll('button, a[href], input, [tabindex="0"]')].filter(el => !el.hidden && !el.disabled && el.getClientRects().length);
+  const first = controls[0], last = controls.at(-1);
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+}
 document.addEventListener("keydown", (e) => {
-  if (lb.hidden) return;
+  if (lb.hidden) {
+    if (mobileOpen && narrowScreen.matches) {
+      if (e.key === "Escape") { e.preventDefault(); closeMobileMenu(true); }
+      if (e.key === "Tab") trapTab(e, sidebar);
+    }
+    return;
+  }
+  if (["Escape", "ArrowLeft", "ArrowRight"].includes(e.key)) e.preventDefault();
   if (e.key === "Escape") closeLightbox();
   if (e.key === "ArrowLeft") step(-1);
   if (e.key === "ArrowRight") step(1);
+  if (e.key === "Tab") trapTab(e, lb);
 });
-let touchX = null;
-lb.addEventListener("touchstart", (e) => { touchX = e.touches[0].clientX; }, { passive: true });
-lb.addEventListener("touchend", (e) => { if (touchX == null) return; const dx = e.changedTouches[0].clientX - touchX; if (Math.abs(dx) > 50) step(dx < 0 ? 1 : -1); touchX = null; });
+let touch = null;
+lb.addEventListener("touchstart", (e) => {
+  touch = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+}, { passive: true });
+lb.addEventListener("touchend", (e) => {
+  if (!touch || e.touches.length) { touch = null; return; }
+  const dx = e.changedTouches[0].clientX - touch.x, dy = e.changedTouches[0].clientY - touch.y;
+  if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.3) step(dx < 0 ? 1 : -1);
+  touch = null;
+}, { passive: true });
+lb.addEventListener("touchcancel", () => { touch = null; }, { passive: true });
 
 // ---------- เส้นทาง ----------
 function route() {
+  ++state.viewVersion;
   if (!lb.hidden) closeLightbox();
   const m = location.hash.match(/^#\/album\/(\d+)/);
   if (m) { app.innerHTML = `<div class="empty">กำลังโหลด…</div>`; loadAlbum(Number(m[1])); }
   else renderList();
+  closeMobileMenu(); renderSidebar();
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", route);
 
 (async () => {
   try { state.user = (await api("/api/me")).user; } catch {}
-  renderTop(); route();
+  renderTop(); route(); loadSidebar();
 })();
+

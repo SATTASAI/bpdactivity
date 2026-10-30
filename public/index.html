@@ -5,41 +5,57 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>ภาพกิจกรรม · โรงเรียนบ้านป่าเด็ง</title>
   <meta name="description" content="ภาพกิจกรรมโรงเรียนบ้านป่าเด็ง">
-  <meta name="theme-color" content="#3730a3">
+  <meta name="theme-color" content="#082d62">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+  <a class="skip-link" href="#app">ข้ามไปยังเนื้อหา</a>
   <header class="topbar">
+    <button class="icon-btn mobile-menu" id="mobileMenu" aria-label="เปิดเมนูอัลบั้ม" aria-controls="albumSidebar" aria-expanded="false"><svg aria-hidden="true"><use href="/icons.svg#menu"/></svg></button>
     <a class="brand" href="#/">
       <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l5-4.5 3.5 3 3-2.5L20 17"/></svg>
+        <svg><use href="/icons.svg#image"/></svg>
       </span>
-      <span><b>ภาพกิจกรรม</b><small>โรงเรียนบ้านป่าเด็ง</small></span>
+      <span><b>โรงเรียนบ้านป่าเด็ง</b><small>ภาพกิจกรรมโรงเรียน</small></span>
     </a>
     <div class="top-actions" id="topActions"></div>
   </header>
 
-  <main id="app" class="container"></main>
+  <div class="layout" id="layout">
+    <aside class="sidebar" id="albumSidebar" aria-label="เมนูอัลบั้ม">
+      <div class="sidebar-heading"><h2>อัลบั้ม</h2><button class="icon-btn" id="sidebarToggle" aria-label="ยุบเมนูอัลบั้ม" aria-controls="sidebarContent" aria-expanded="true"><svg aria-hidden="true"><use href="/icons.svg#sidebar"/></svg></button></div>
+      <div class="sidebar-content" id="sidebarContent">
+        <a class="nav-all" href="#/" aria-label="อัลบั้มทั้งหมด" title="อัลบั้มทั้งหมด"><svg aria-hidden="true"><use href="/icons.svg#image"/></svg><span>อัลบั้มทั้งหมด</span></a>
+        <p class="sidebar-label">รายการอัลบั้ม</p>
+        <nav id="sidebarAlbums" aria-label="รายการอัลบั้ม"><p class="sidebar-message">กำลังโหลด…</p></nav>
+      </div>
+      <button class="collapse-btn" id="sidebarCollapse"><svg aria-hidden="true"><use href="/icons.svg#chevron-left"/></svg><span>ยุบแถบเมนู</span></button>
+    </aside>
+    <button class="sidebar-scrim" id="sidebarScrim" aria-label="ปิดเมนูอัลบั้ม" tabindex="-1" hidden></button>
+    <main id="app" class="container" tabindex="-1"></main>
+  </div>
 
   <!-- กล่องโต้ตอบ (ใช้ร่วมกัน) -->
   <dialog id="dialog"><form method="dialog" id="dialogForm"></form></dialog>
 
   <!-- ดูภาพขนาดใหญ่ -->
-  <div id="lightbox" class="lightbox" hidden>
+  <div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-label="ดูภาพขนาดใหญ่" hidden>
     <button class="lb-btn lb-close" data-lb="close" aria-label="ปิด">
-      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      <svg aria-hidden="true"><use href="/icons.svg#x"/></svg></button>
     <button class="lb-btn lb-prev" data-lb="prev" aria-label="ภาพก่อนหน้า">
-      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <svg aria-hidden="true"><use href="/icons.svg#chevron-left"/></svg></button>
+    <p id="lbStatus" class="lb-status" role="status" hidden></p>
     <img id="lbImg" alt="">
     <button class="lb-btn lb-next" data-lb="next" aria-label="ภาพถัดไป">
-      <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
-    <div class="lb-bar"><span id="lbCount"></span><a id="lbDownload" href="#">ดาวน์โหลด</a></div>
+      <svg aria-hidden="true"><use href="/icons.svg#chevron-right"/></svg></button>
+    <div class="lb-bar"><div><span id="lbCount" role="status" aria-live="polite"></span><span id="lbName" class="lb-name"></span></div><a id="lbDownload" href="#" download><svg aria-hidden="true"><use href="/icons.svg#download"/></svg>ดาวน์โหลด</a></div>
   </div>
 
   <div id="toast" class="toast" role="status" hidden></div>
   <script src="/app.js" type="module"></script>
 </body>
 </html>
+
