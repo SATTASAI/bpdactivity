@@ -99,7 +99,7 @@ async function quickUploadDialog() {
   if (!state.user) return loginDialog();
   let options = "";
   try { options = await albumOptionsHtml(); } catch (x) { return toast(x.message, true); }
-  openDialog(`<h2>อัพโหลดภาพ</h2><p class="hint">เลือกได้หลายภาพพร้อมกัน ไม่จำกัดจำนวน · ภาพเก็บใน Google Drive โฟลเดอร์ของงาน</p>
+  openDialog(`<h2>อัพโหลดภาพ</h2><p class="hint">สร้างงานใหม่หรือเลือกอัลบั้มเดิม แล้วเลือกภาพได้ไม่จำกัดจำนวน · งานใหม่จะได้โฟลเดอร์ “ชื่องาน (วันที่วันนี้)” ใน Google Drive</p>
     <div class="seg"><label><input type="radio" name="mode" value="new" checked> สร้างงานใหม่</label><label><input type="radio" name="mode" value="old"> อัลบั้มเดิม</label></div>
     <label class="field" data-mode="new">ชื่องาน<input name="title" maxlength="150" placeholder="เช่น กีฬาสีภายใน"></label>
     <label class="field" data-mode="old" hidden>อัลบั้ม<select name="album">${options}</select></label>
@@ -255,8 +255,7 @@ function renderList() {
   app.innerHTML = `<section class="hero">
       <div><h1>ภาพกิจกรรมโรงเรียน</h1><p>รวมภาพกิจกรรมของโรงเรียนบ้านป่าเด็ง</p></div>
       <div class="tools"><label class="search">${ICON.search}<input id="q" type="search" aria-label="ค้นหาชื่องาน" placeholder="ค้นหาชื่องาน" value="${esc(state.list.q)}"></label>
-        <button class="btn" id="quickUpload">${ICON.upload} อัพโหลดภาพ</button>
-        ${state.user ? `<button class="btn ghost" id="newAlbum">${ICON.plus} สร้างงานใหม่</button>` : ""}</div>
+        <button class="btn" id="quickUpload">${ICON.upload} อัพโหลดภาพ</button></div>
     </section>
     <div id="listBody" aria-busy="true"><div class="empty" role="status">กำลังโหลด…</div></div>
     <footer class="page-footer">ภาพกิจกรรม · โรงเรียนบ้านป่าเด็ง</footer>`;
@@ -269,7 +268,6 @@ function renderList() {
       if (view === state.viewVersion) { $("#listBody").setAttribute("aria-busy", "false"); toast(x.message, true); }
     }); }, 300);
   };
-  if (state.user) $("#newAlbum").onclick = () => albumDialog(null);
   $("#quickUpload").onclick = quickUploadDialog;
   loadList().catch((x) => {
     if (view !== state.viewVersion) return;
