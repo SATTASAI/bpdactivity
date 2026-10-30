@@ -123,6 +123,16 @@ export async function fetchThumbnail(env, fileId, size) {
   return res.ok ? res : null;
 }
 
+// ภาพย่อจากภาพเต็มผ่าน Cloudflare Image Resizing (หมุนตาม EXIF) — ถ้าย่อไม่ได้ คืน null
+export async function fetchResized(env, fileId, size) {
+  const token = await accessToken(env);
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cf: { image: { width: size, height: size, fit: "scale-down", quality: 82 } },
+  });
+  return res.ok && !String(res.headers.get("cf-resized") || "").includes("err") ? res : null;
+}
+
 // รายการไฟล์ทั้งหมดตาม query (วนทุกหน้า)
 export async function listAll(env, q, fields) {
   const out = [];
