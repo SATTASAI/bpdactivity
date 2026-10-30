@@ -10,7 +10,7 @@
 - ภาพส่งผ่าน Worker (`/img/:id/thumb|full`) ไม่ต้องแชร์โฟลเดอร์ Drive เป็นสาธารณะ
 
 ## ตั้งค่า (ครั้งแรก)
-1. Cloudflare → Variables: `ACTIVITY_DRIVE_FOLDER_ID` (ID โฟลเดอร์หลักใน Drive) — ตั้งใน dashboard เท่านั้น
+1. `ACTIVITY_DRIVE_FOLDER_ID` อยู่ใน `wrangler.jsonc` แล้ว (โฟลเดอร์ Photo) — แก้ที่ไฟล์นี้ที่เดียว
 2. Cloudflare → Worker `bpdactivity` → Settings → Variables and Secrets เพิ่ม Secret:
    - `JWT_SECRET` (สุ่มใหม่ ไม่ต้องเหมือน system)
    - `GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET`, `GOOGLE_DRIVE_REFRESH_TOKEN` (ค่าเดียวกับ Worker `banpadeng-school-db`)
