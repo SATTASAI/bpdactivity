@@ -3,7 +3,7 @@
 // - ภาพเก็บใน Google Drive: โฟลเดอร์ "ชื่องาน (30 ต.ค. 2569)" ใต้ ACTIVITY_DRIVE_FOLDER_ID
 import { verifyPassword, signJWT, verifyJWT, buildSessionCookie, buildClearCookie, AUTH_COOKIE_NAME } from "./crypto.js";
 import * as drive from "./drive.js";
-import { runSync } from "./sync.js";
+import { runSync, displayDims } from "./sync.js";
 import { zipStream, splitParts, uniqueNames } from "./zip.js";
 
 const ROLES = ["teacher", "executive", "staff", "superadmin"];
@@ -94,6 +94,9 @@ export async function ensureSchema(env) {
   await migrateV1(env);
   const albumCols = ((await env.DB.prepare("PRAGMA table_info(activity_albums)").all()).results || []).map((c) => c.name);
   if (!albumCols.includes("description")) await env.DB.prepare("ALTER TABLE activity_albums ADD COLUMN description TEXT").run();
+  // ครั้งเดียว: ให้ซิงก์ตรวจทุกอัลบั้มใหม่ เพื่อเก็บขนาดภาพ (กว้าง/สูงตามการหมุนภาพ) ไว้เลือกภาพปก
+  const flag = await env.DB.prepare("INSERT OR IGNORE INTO activity_sync_state (key, value) VALUES ('dims_backfill_v1', datetime('now'))").run();
+  if (Number(flag.meta?.changes) > 0) await env.DB.prepare("UPDATE activity_albums SET synced_at = NULL").run();
   await env.DB.batch([
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_activity_albums_date ON activity_albums(deleted_at, event_date, id)"),
     env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_albums_folder ON activity_albums(drive_folder_id)"),
@@ -175,6 +178,12 @@ async function login(request, env) {
 }
 
 // ---------- อัลบั้ม ----------
+// ภาพปกอัตโนมัติ (เมื่อยังไม่ได้ตั้งภาพปกเอง): ภาพที่สัดส่วนใกล้กรอบปกอัลบั้ม (กว้าง:สูง ≈ 1.75) ที่สุด
+// ภาพที่ยังไม่รู้ขนาดอยู่ท้ายสุด ถ้าเท่ากันเลือกภาพแรกของอัลบั้ม
+const COVER_RATIO = 1.75;
+const AUTO_COVER_SQL = `(SELECT p.id FROM activity_photos p WHERE p.album_id = a.id AND p.deleted_at IS NULL
+  ORDER BY (p.width > 0 AND p.height > 0) DESC, ABS(p.width * 1.0 / NULLIF(p.height, 0) - ${COVER_RATIO}), p.id LIMIT 1)`;
+
 async function listAlbums(url, env) {
   const q = String(url.searchParams.get("q") || "").trim().slice(0, 100);
   const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
@@ -185,7 +194,7 @@ async function listAlbums(url, env) {
       (SELECT COUNT(*) FROM activity_photos p WHERE p.album_id = a.id AND p.deleted_at IS NULL) AS photo_count,
       COALESCE(
         (SELECT p.id FROM activity_photos p WHERE p.id = a.cover_photo_id AND p.album_id = a.id AND p.deleted_at IS NULL),
-        (SELECT p.id FROM activity_photos p WHERE p.album_id = a.id AND p.deleted_at IS NULL ORDER BY p.id LIMIT 1)
+        ${AUTO_COVER_SQL}
       ) AS cover_id
     FROM activity_albums a LEFT JOIN users u ON u.id = a.created_by
     WHERE ${where} ORDER BY a.event_date DESC, a.id DESC LIMIT ? OFFSET ?`)
@@ -199,7 +208,8 @@ function getAlbum(env, id) {
 }
 
 async function showAlbum(env, id) {
-  const album = await env.DB.prepare(`SELECT a.id, a.title, a.event_date, a.description, a.folder_name, a.source, a.cover_photo_id, a.created_by, a.created_at, u.full_name AS created_by_name
+  const album = await env.DB.prepare(`SELECT a.id, a.title, a.event_date, a.description, a.folder_name, a.source, a.cover_photo_id, a.created_by, a.created_at, u.full_name AS created_by_name,
+    COALESCE((SELECT p.id FROM activity_photos p WHERE p.id = a.cover_photo_id AND p.album_id = a.id AND p.deleted_at IS NULL), ${AUTO_COVER_SQL}) AS cover_id
     FROM activity_albums a LEFT JOIN users u ON u.id = a.created_by WHERE a.id = ? AND a.deleted_at IS NULL`).bind(id).first();
   if (!album) return fail("ไม่พบงานนี้", 404);
   const photos = await env.DB.prepare(`SELECT id, file_name, width, height, uploaded_by, created_at FROM activity_photos
@@ -299,10 +309,10 @@ async function uploadPhoto(request, env, user, albumId) {
   if (file.size === 0) return fail("ไฟล์ว่างเปล่า");
   const name = safeFileName(file.name, mimeType);
   const uploaded = await drive.uploadFile(env, album.drive_folder_id, name, mimeType, new Uint8Array(await file.arrayBuffer()));
-  const meta = uploaded.imageMediaMetadata || {};
+  const [dimW, dimH] = displayDims(uploaded.imageMediaMetadata);
   await env.DB.prepare(`INSERT INTO activity_photos (album_id, drive_file_id, drive_parent_id, file_name, mime_type, file_size, width, height, uploaded_by, source)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'web') ON CONFLICT(drive_file_id) DO UPDATE SET uploaded_by = excluded.uploaded_by, source = 'web'`)
-    .bind(albumId, uploaded.id, album.drive_folder_id, name, mimeType, file.size, meta.width || null, meta.height || null, user.id).run();
+    .bind(albumId, uploaded.id, album.drive_folder_id, name, mimeType, file.size, dimW, dimH, user.id).run();
   const row = await env.DB.prepare("SELECT id FROM activity_photos WHERE drive_file_id = ?").bind(uploaded.id).first();
   await env.DB.prepare("UPDATE activity_albums SET updated_at = datetime('now') WHERE id = ?").bind(albumId).run();
   return json({ photo: { id: row.id, file_name: name } }, 201);

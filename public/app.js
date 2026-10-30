@@ -315,7 +315,7 @@ const canDelete = (p) => state.user && (canManage() || state.user.id === p.uploa
 function renderAlbum() {
   const a = state.album;
   const manage = canManage();
-  const coverId = a.cover_photo_id || state.photos[0]?.id;
+  const coverId = a.cover_id || a.cover_photo_id || state.photos[0]?.id;
   const selectable = state.photos.filter(canDelete);
   if (!selectable.length) state.selecting = false;
   const sel = state.selected;

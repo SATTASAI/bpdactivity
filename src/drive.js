@@ -100,7 +100,7 @@ export async function uploadFile(env, folderId, name, mimeType, bytes) {
     bytes,
     `\r\n--${boundary}--`,
   ]);
-  const res = await driveFetch(env, "/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,size,imageMediaMetadata(width,height)", {
+  const res = await driveFetch(env, "/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,size,imageMediaMetadata(width,height,rotation)", {
     method: "POST",
     headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
     body,

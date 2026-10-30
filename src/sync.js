@@ -5,7 +5,7 @@
 import * as drive from "./drive.js";
 
 const IMAGE_Q = "mimeType contains 'image/' and trashed = false";
-const IMAGE_FIELDS = "id,name,mimeType,size,parents,imageMediaMetadata(width,height)";
+const IMAGE_FIELDS = "id,name,mimeType,size,parents,imageMediaMetadata(width,height,rotation)";
 const ALBUMS_PER_RUN = 30;
 
 const thaiDateOf = (iso) => drive.thaiToday(new Date(iso));
@@ -68,6 +68,12 @@ async function markRecentlyChanged(env) {
   await setState(env, "images_checked_at", new Date(Date.parse(now) - 60000).toISOString());
 }
 
+// ขนาดตามที่ตาเห็น: ภาพมือถือแนวตั้งมักเก็บเป็นแนวนอน + rotation 90°/270° → สลับกว้าง/สูง
+export function displayDims(meta = {}) {
+  const w = Number(meta.width) || null, h = Number(meta.height) || null;
+  return [1, 3].includes(Number(meta.rotation)) ? [h, w] : [w, h];
+}
+
 export async function syncAlbumPhotos(env, album) {
   const fid = drive.escapeQuery(album.drive_folder_id);
   const subfolders = await drive.listAll(env, `'${fid}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`, "id");
@@ -76,15 +82,21 @@ export async function syncAlbumPhotos(env, album) {
     files = files.concat(await drive.listAll(env, `'${drive.escapeQuery(sf.id)}' in parents and ${IMAGE_Q}`, IMAGE_FIELDS));
   }
   files.sort((a, b) => String(a.name).localeCompare(String(b.name), "th", { numeric: true }));
-  const existing = (await env.DB.prepare("SELECT id, drive_file_id, deleted_at FROM activity_photos WHERE album_id = ?").bind(album.id).all()).results || [];
+  const existing = (await env.DB.prepare("SELECT id, drive_file_id, width, height, deleted_at FROM activity_photos WHERE album_id = ?").bind(album.id).all()).results || [];
   const known = new Map(existing.map((p) => [p.drive_file_id, p]));
   const present = new Set(files.map((f) => f.id));
   const stmts = [];
   for (const f of files) {
-    if (known.has(f.id)) continue;
-    const meta = f.imageMediaMetadata || {};
+    const [w, h] = displayDims(f.imageMediaMetadata);
+    const row = known.get(f.id);
+    if (row) {
+      if (w && h && (row.width !== w || row.height !== h)) {
+        stmts.push(env.DB.prepare("UPDATE activity_photos SET width = ?, height = ? WHERE id = ?").bind(w, h, row.id));
+      }
+      continue;
+    }
     stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO activity_photos (album_id, drive_file_id, drive_parent_id, file_name, mime_type, file_size, width, height, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'drive')`).bind(album.id, f.id, (f.parents || [])[0] || null, f.name, f.mimeType, Number(f.size) || null, meta.width || null, meta.height || null));
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'drive')`).bind(album.id, f.id, (f.parents || [])[0] || null, f.name, f.mimeType, Number(f.size) || null, w, h));
   }
   for (const p of existing) {
     if (!p.deleted_at && !present.has(p.drive_file_id)) {

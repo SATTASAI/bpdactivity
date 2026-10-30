@@ -226,3 +226,23 @@ test("ล็อกอินได้แม้ไม่ได้ตั้ง JWT_
   assert.equal((await call("/api/album-options", { cookie: c })).data.albums.length >= 2, true);
   env.JWT_SECRET = saved;
 });
+
+test("ภาพปกอัตโนมัติเลือกภาพที่สัดส่วนพอดีกรอบ (หมุนภาพแนวตั้งถูก)", async () => {
+  fakeDrive = {
+    folders: [{ id: "fCov", name: "ทดสอบปก", createdTime: "2026-10-01T03:00:00Z", parent: "root" }],
+    files: [
+      { id: "v1", name: "1.jpg", mimeType: "image/jpeg", parents: ["fCov"], imageMediaMetadata: { width: 3000, height: 4000 } },
+      { id: "v2", name: "2.jpg", mimeType: "image/jpeg", parents: ["fCov"], imageMediaMetadata: { width: 4000, height: 3000, rotation: 1 } },
+      { id: "v3", name: "3.jpg", mimeType: "image/jpeg", parents: ["fCov"], imageMediaMetadata: { width: 1920, height: 1080 } },
+      { id: "v4", name: "4.jpg", mimeType: "image/jpeg", parents: ["fCov"], imageMediaMetadata: { width: 4000, height: 3000 } },
+    ],
+  };
+  sql.exec("UPDATE activity_albums SET deleted_at = datetime('now')");
+  await runSync(env);
+  const al = (await call("/api/albums")).data.albums.find((x) => x.title === "ทดสอบปก");
+  const want = sql.prepare("SELECT id FROM activity_photos WHERE drive_file_id = 'v3'").get().id;
+  assert.equal(al.cover_id, want);
+  assert.equal((await call(`/api/albums/${al.id}`)).data.album.cover_id, want);
+  const v2 = sql.prepare("SELECT width, height FROM activity_photos WHERE drive_file_id = 'v2'").get();
+  assert.deepEqual([v2.width, v2.height], [3000, 4000]);
+});
