@@ -203,7 +203,7 @@ function renderSidebar() {
   all.classList.toggle("selected", !selected);
   if (!selected) all.setAttribute("aria-current", "page"); else all.removeAttribute("aria-current");
   $("#sidebarAlbums").innerHTML = albums.map(a => `<a class="sidebar-album${String(a.id) === selected ? " selected" : ""}" href="#/album/${a.id}" ${String(a.id) === selected ? 'aria-current="page"' : ""} title="${esc(a.title)}">
-      <span class="sidebar-thumb">${a.cover_id ? `<img src="/img/${a.cover_id}/thumb?v=2" alt="" loading="lazy">` : ICON.image}</span>
+      <span class="sidebar-thumb">${a.cover_id ? `<img src="/img/${a.cover_id}/thumb?v=3" alt="" loading="lazy">` : ICON.image}</span>
       <span class="sidebar-album-info"><b>${esc(a.title)}</b><small>${thaiDate(a.event_date)}</small><small>${ICON.image}${a.photo_count} ภาพ</small></span>
     </a>`).join("") + (!albums.length ? `<p class="sidebar-message">${loading ? "กำลังโหลด…" : "ยังไม่มีอัลบั้ม"}</p>` : "") +
     (hasMore ? `<button class="sidebar-more" id="sidebarMore" ${loading ? "disabled" : ""}>${loading ? "กำลังโหลด…" : "ดูอัลบั้มเพิ่มเติม"}</button>` : "");
@@ -241,7 +241,7 @@ function albumMeta(a) {
 }
 const canManageListAlbum = (a) => state.user && (state.user.is_admin || state.user.id === a.created_by);
 function albumCard(a) {
-  const cover = a.cover_id ? `<img src="/img/${a.cover_id}/thumb?v=2" alt="" loading="lazy">` : ICON.image;
+  const cover = a.cover_id ? `<img src="/img/${a.cover_id}/thumb?v=3" alt="" loading="lazy">` : ICON.image;
   const sel = state.list.selecting, mine = canManageListAlbum(a), picked = state.list.selected.has(a.id);
   return `<a class="album${sel && picked ? " picked" : ""}${sel && !mine ? " locked" : ""}" href="#/album/${a.id}" data-album="${a.id}"${sel ? ` aria-pressed="${picked}"` : ""}>
     <div class="cover">${cover}${sel && mine ? `<span class="tick" aria-hidden="true">${picked ? "✓" : ""}</span>` : ""}</div>
@@ -249,7 +249,7 @@ function albumCard(a) {
 }
 function featuredAlbum(a) {
   return `<a class="featured" href="#/album/${a.id}">
-    <div class="featured-cover">${a.cover_id ? `<img src="/img/${a.cover_id}/thumb?v=2" alt="" fetchpriority="high">` : ICON.image}</div>
+    <div class="featured-cover">${a.cover_id ? `<img src="/img/${a.cover_id}/thumb?v=3" alt="" fetchpriority="high">` : ICON.image}</div>
     <div class="featured-copy"><span class="eyebrow">อัลบั้มล่าสุด</span><h2>${esc(a.title)}</h2><p>บันทึกภาพกิจกรรมและความทรงจำของโรงเรียนบ้านป่าเด็ง</p>
       <div class="featured-bottom">${albumMeta(a)}<span class="album-open" aria-label="ดูอัลบั้ม">${ICON.arrow}</span></div>
     </div></a>`;
@@ -415,7 +415,7 @@ function renderAlbum() {
       <input id="files" type="file" accept="image/*" multiple hidden></div><div id="progress"></div>` : ""}
     ${state.photos.length ? `<div class="photos${state.selecting ? " selecting" : ""}">${state.photos.map((p, i) => `
       <div class="photo${sel.has(p.id) ? " picked" : ""}${state.selecting && !canDelete(p) ? " locked" : ""}" data-i="${i}" data-id="${p.id}" tabindex="0" role="button" aria-label="${state.selecting ? "เลือก" : "ดู"}ภาพ ${i + 1}: ${esc(p.file_name)}"${state.selecting ? ` aria-pressed="${sel.has(p.id)}"` : ""}>
-        <img src="/img/${p.id}/thumb?v=2" alt="${esc(p.file_name)}" loading="lazy">
+        <img src="/img/${p.id}/thumb?v=3" alt="${esc(p.file_name)}" loading="lazy">
         ${state.selecting && canDelete(p) ? `<span class="tick" aria-hidden="true">${sel.has(p.id) ? "✓" : ""}</span>` : ""}
         ${p.id === coverId && !state.selecting ? `<span class="badge">ภาพปก</span>` : ""}
         ${state.user && !state.selecting ? `<div class="ph-actions">

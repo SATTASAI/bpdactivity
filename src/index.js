@@ -517,7 +517,7 @@ async function downloadZip(env, id, partNo, user) {
 }
 
 // ส่งภาพผ่าน Worker (ไฟล์ใน Drive ไม่ต้องเปิดสาธารณะ) + เก็บแคชที่ Cloudflare
-const imageCacheKey = (origin, id, size) => new Request(`${origin}/img/${id}/${size}${size === "thumb" ? "?v=2" : ""}`);
+const imageCacheKey = (origin, id, size) => new Request(`${origin}/img/${id}/${size}${size === "thumb" ? "?v=3" : ""}`);
 let cacheOrigin = "https://activity.banpadengschool.ac.th";
 async function purgeImageCache(id) {
   await Promise.all(["thumb", "full"].map((s) => caches.default.delete(imageCacheKey(cacheOrigin, id, s)).catch(() => {})));
@@ -532,11 +532,11 @@ async function serveImage(request, env, ctx, id, size) {
   const key = imageCacheKey(new URL(request.url).origin, id, size);
   const cached = isPublic ? await caches.default.match(key) : null;
   if (cached) return cached;
-  // ภาพหมุน 180° (EXIF) ภาพย่อของ Drive ออกมากลับหัว → ย่อจากภาพเต็มเอง (Cloudflare หมุนตาม EXIF ให้)
-  const upsideDown = Number(photo.rotation) === 2;
+  // ภาพที่มีการหมุน (EXIF 90°/180°/270°) ภาพย่อของ Drive ออกมาเอียง/กลับหัว → ย่อจากภาพเต็มเอง (Cloudflare หมุนตาม EXIF ให้)
+  const rotated = [1, 2, 3].includes(Number(photo.rotation));
   let upstream = null;
   if (size === "thumb") {
-    upstream = upsideDown
+    upstream = rotated
       ? await drive.fetchResized(env, photo.drive_file_id, THUMB_SIZE).catch(() => null)
       : await drive.fetchThumbnail(env, photo.drive_file_id, THUMB_SIZE).catch(() => null);
   }
@@ -545,7 +545,7 @@ async function serveImage(request, env, ctx, id, size) {
   const headers = new Headers({
     "Content-Type": upstream.headers.get("Content-Type") || photo.mime_type,
     // ภาพย่อที่ได้จากภาพเต็ม (Drive ยังสร้างภาพย่อไม่เสร็จ) แคชสั้น ๆ เพื่อให้ครั้งหน้าได้ภาพย่อจริง
-    "Cache-Control": !isPublic ? "private, max-age=3600" : size === "thumb" && !isThumb ? "public, max-age=600" : "public, max-age=86400",
+    "Cache-Control": !isPublic ? "private, max-age=3600" : size === "thumb" && (!isThumb || photo.rotation == null) ? "public, max-age=600" : "public, max-age=86400",
     "X-Content-Type-Options": "nosniff",
   });
   if (size === "full" && new URL(request.url).searchParams.has("download")) {
