@@ -27,10 +27,20 @@ globalThis.fetch = async (url, init = {}) => {
   if (url.startsWith("https://lh3.example/")) return new Response("THUMB", { headers: { "Content-Type": "image/jpeg" } });
   if (url.includes("alt=media")) return new Response("FULL", { headers: { "Content-Type": "image/jpeg" } });
   if (url.endsWith("/files?fields=id&supportsAllDrives=true")) return Response.json({ id: "folder1" });
+  if (url.includes("/files?") && url.includes("q=")) return Response.json({ files: driveList(new URL(url).searchParams.get("q")) });
   return Response.json({});
 };
 
-const { _handleForTests: handle } = await import("../src/index.js");
+// Drive จำลองสำหรับซิงก์: root → โฟลเดอร์ → ภาพ
+let fakeDrive = { folders: [], files: [] };
+function driveList(q) {
+  const parent = (q.match(/^'([^']+)' in parents/) || [])[1];
+  if (q.includes("google-apps.folder")) return fakeDrive.folders.filter((f) => f.parent === parent);
+  if (q.includes("createdTime >")) return fakeDrive.files;
+  return fakeDrive.files.filter((f) => f.parents[0] === parent);
+}
+const { _handleForTests: handle, ensureSchema } = await import("../src/index.js");
+const { runSync } = await import("../src/sync.js");
 const sql = new DatabaseSync(":memory:");
 sql.exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, password_hash TEXT, password_salt TEXT, full_name TEXT, role TEXT, status TEXT, session_version INTEGER DEFAULT 1, deleted_at TEXT);
   CREATE TABLE viewer_accounts (user_id INTEGER PRIMARY KEY);`);
@@ -101,4 +111,66 @@ test("ขั้นตอนครบ: ล็อกอิน สร้างง�
   // เปลี่ยนรหัสผ่านใน system (session_version เพิ่ม) → หลุดจากระบบนี้ด้วย
   sql.exec("UPDATE users SET session_version = 2 WHERE id = 1");
   assert.equal((await call("/api/me", { cookie: c1 })).data.user, null);
+});
+
+test("ซิงก์จาก Drive: ดึงอัลบั้ม+ภาพ เรียงเก่า→ใหม่ เปลี่ยนชื่อ/ลบตาม Drive", async () => {
+  fakeDrive = {
+    folders: [
+      { id: "fA", name: "ทอดผ้าป่าโรงเรียน 2569", createdTime: "2026-09-07T11:20:59Z", parent: "root" },
+      { id: "fB", name: "วันพ่อแห่งชาติ 2567", createdTime: "2024-12-04T03:00:00Z", parent: "root" },
+      { id: "fC", name: "งานใหม่ (5 ม.ค. 2569)", createdTime: "2026-10-30T03:00:00Z", parent: "root" },
+      { id: "fA1", name: "ช่วงเช้า", parent: "fA" },
+    ],
+    files: [
+      { id: "i1", name: "a.jpg", mimeType: "image/jpeg", parents: ["fA"] },
+      { id: "i2", name: "b.jpg", mimeType: "image/jpeg", parents: ["fA1"] },
+      { id: "i3", name: "c.jpg", mimeType: "image/jpeg", parents: ["fB"] },
+    ],
+  };
+  const r = await runSync(env);
+  assert.equal(r.folders, 3);
+  const albums = (await call("/api/albums")).data.albums;
+  assert.deepEqual(albums.map((a) => a.title), ["วันพ่อแห่งชาติ 2567", "งานใหม่", "ทอดผ้าป่าโรงเรียน 2569"]);
+  assert.deepEqual(albums.map((a) => a.event_date), ["2024-12-04", "2026-01-05", "2026-09-07"]);
+  const pa = albums.find((a) => a.title.startsWith("ทอดผ้าป่า"));
+  assert.equal(pa.photo_count, 2); // รวมภาพในโฟลเดอร์ย่อย
+
+  // ครูอัพภาพเข้าอัลบั้มที่ซิงก์มา → ไฟล์ไปโฟลเดอร์เดิมใน Drive
+  const c1 = await loginAs("t2@x.th");
+  const fd = new FormData(); fd.append("file", new File([new Uint8Array([1])], "x.jpg", { type: "image/jpeg" }));
+  driveCalls.length = 0;
+  assert.equal((await call(`/api/albums/${pa.id}/photos`, { method: "POST", body: fd, cookie: c1 })).res.status, 201);
+  const up = sql.prepare("SELECT drive_file_id, drive_parent_id FROM activity_photos WHERE source = 'web' AND album_id = ?").get(pa.id);
+  assert.equal(up.drive_parent_id, "fA");
+  fakeDrive.files.push({ id: up.drive_file_id, name: "x.jpg", mimeType: "image/jpeg", parents: ["fA"] });
+  // ครูทั่วไปลบอัลบั้มจาก Drive ไม่ได้ (ไม่มีผู้สร้าง)
+  assert.equal((await call(`/api/albums/${pa.id}`, { method: "DELETE", cookie: c1 })).res.status, 403);
+
+  // ใน Drive: เปลี่ยนชื่อ fB, ลบภาพ i1, ลบโฟลเดอร์ fC
+  fakeDrive.folders[1].name = "วันพ่อ 2567";
+  fakeDrive.folders.splice(2, 1);
+  fakeDrive.files = fakeDrive.files.filter((f) => f.id !== "i1");
+  sql.exec("UPDATE activity_albums SET synced_at = NULL");
+  await runSync(env);
+  const after = (await call("/api/albums")).data.albums;
+  assert.deepEqual(after.map((a) => a.title), ["วันพ่อ 2567", "ทอดผ้าป่าโรงเรียน 2569"]);
+  assert.equal(after[1].photo_count, 2); // b.jpg + x.jpg ที่อัพผ่านเว็บ
+});
+
+test("ย้ายตารางรุ่นแรก (created_by NOT NULL) ได้โดยข้อมูลไม่หาย", async () => {
+  const db2 = new DatabaseSync(":memory:");
+  db2.exec(`CREATE TABLE activity_albums (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, event_date TEXT NOT NULL, folder_name TEXT NOT NULL,
+    drive_folder_id TEXT NOT NULL, cover_photo_id INTEGER, created_by INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')), deleted_at TEXT, deleted_by INTEGER);
+    CREATE TABLE activity_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, album_id INTEGER NOT NULL REFERENCES activity_albums(id), drive_file_id TEXT NOT NULL,
+    file_name TEXT NOT NULL, mime_type TEXT NOT NULL, file_size INTEGER, width INTEGER, height INTEGER, uploaded_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')), deleted_at TEXT, deleted_by INTEGER);
+    INSERT INTO activity_albums (title, event_date, folder_name, drive_folder_id, created_by) VALUES ('ก', '2026-10-30', 'ก (30 ต.ค. 2569)', 'fX', 1);
+    INSERT INTO activity_photos (album_id, drive_file_id, file_name, mime_type, uploaded_by) VALUES (1, 'pX', 'a.jpg', 'image/jpeg', 1);`);
+  const mod = await import("../src/index.js?fresh");
+  await mod.ensureSchema({ DB: d1(db2) });
+  const cols = db2.prepare("PRAGMA table_info(activity_albums)").all();
+  assert.equal(cols.find((c) => c.name === "created_by").notnull, 0);
+  assert.equal(db2.prepare("SELECT drive_parent_id FROM activity_photos").get().drive_parent_id, "fX");
+  assert.equal(db2.prepare("SELECT created_by FROM activity_albums").get().created_by, 1);
 });

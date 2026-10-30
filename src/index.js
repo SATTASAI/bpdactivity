@@ -3,6 +3,7 @@
 // - ภาพเก็บใน Google Drive: โฟลเดอร์ "ชื่องาน (30 ต.ค. 2569)" ใต้ ACTIVITY_DRIVE_FOLDER_ID
 import { verifyPassword, signJWT, verifyJWT, buildSessionCookie, buildClearCookie, AUTH_COOKIE_NAME } from "./crypto.js";
 import * as drive from "./drive.js";
+import { runSync } from "./sync.js";
 
 const ROLES = ["teacher", "executive", "staff", "superadmin"];
 const ADMIN_ROLES = ["superadmin", "executive"];
@@ -27,39 +28,74 @@ function json(data, status = 200, headers = {}) {
 const fail = (error, status = 400) => json({ error }, status);
 
 // ---------- ฐานข้อมูล (ใช้ D1 ร่วมกับ system; ตารางขึ้นต้นด้วย activity_) ----------
+// created_by / uploaded_by เป็น NULL ได้ = อัลบั้ม/ภาพที่ซิงก์มาจาก Drive (source = 'drive')
+const ALBUMS_DDL = (name) => `CREATE TABLE IF NOT EXISTS ${name} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  event_date TEXT NOT NULL,
+  folder_name TEXT NOT NULL,
+  drive_folder_id TEXT NOT NULL,
+  cover_photo_id INTEGER,
+  created_by INTEGER,
+  source TEXT NOT NULL DEFAULT 'web',
+  synced_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  deleted_at TEXT,
+  deleted_by INTEGER)`;
+const PHOTOS_DDL = (name) => `CREATE TABLE IF NOT EXISTS ${name} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  album_id INTEGER NOT NULL,
+  drive_file_id TEXT NOT NULL,
+  drive_parent_id TEXT,
+  file_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  file_size INTEGER,
+  width INTEGER,
+  height INTEGER,
+  uploaded_by INTEGER,
+  source TEXT NOT NULL DEFAULT 'web',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  deleted_at TEXT,
+  deleted_by INTEGER)`;
+
+// ตารางรุ่นแรก (created_by NOT NULL) → สร้างใหม่ตามโครงสร้างปัจจุบัน แล้วคัดลอกข้อมูลเดิม
+async function migrateV1(env) {
+  const cols = (await env.DB.prepare("PRAGMA table_info(activity_albums)").all()).results || [];
+  const createdBy = cols.find((c) => c.name === "created_by");
+  if (!createdBy || (Number(createdBy.notnull) === 0 && cols.some((c) => c.name === "source"))) return;
+  await env.DB.batch([
+    env.DB.prepare(ALBUMS_DDL("activity_albums_v2")),
+    env.DB.prepare(`INSERT INTO activity_albums_v2 (id, title, event_date, folder_name, drive_folder_id, cover_photo_id, created_by, created_at, updated_at, deleted_at, deleted_by)
+      SELECT id, title, event_date, folder_name, drive_folder_id, cover_photo_id, created_by, created_at, updated_at, deleted_at, deleted_by FROM activity_albums`),
+    env.DB.prepare(PHOTOS_DDL("activity_photos_v2")),
+    env.DB.prepare(`INSERT INTO activity_photos_v2 (id, album_id, drive_file_id, file_name, mime_type, file_size, width, height, uploaded_by, created_at, deleted_at, deleted_by)
+      SELECT id, album_id, drive_file_id, file_name, mime_type, file_size, width, height, uploaded_by, created_at, deleted_at, deleted_by FROM activity_photos`),
+    env.DB.prepare("DROP TABLE activity_photos"),
+    env.DB.prepare("DROP TABLE activity_albums"),
+    env.DB.prepare("ALTER TABLE activity_albums_v2 RENAME TO activity_albums"),
+    env.DB.prepare("ALTER TABLE activity_photos_v2 RENAME TO activity_photos"),
+    env.DB.prepare("UPDATE activity_photos SET drive_parent_id = (SELECT drive_folder_id FROM activity_albums a WHERE a.id = activity_photos.album_id)"),
+  ]);
+}
+
 let schemaReady = false;
-async function ensureSchema(env) {
+export async function ensureSchema(env) {
   if (schemaReady) return;
   await env.DB.batch([
-    env.DB.prepare(`CREATE TABLE IF NOT EXISTS activity_albums (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      event_date TEXT NOT NULL,
-      folder_name TEXT NOT NULL,
-      drive_folder_id TEXT NOT NULL,
-      cover_photo_id INTEGER,
-      created_by INTEGER NOT NULL REFERENCES users(id),
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      deleted_at TEXT,
-      deleted_by INTEGER)`),
-    env.DB.prepare(`CREATE TABLE IF NOT EXISTS activity_photos (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      album_id INTEGER NOT NULL REFERENCES activity_albums(id),
-      drive_file_id TEXT NOT NULL,
-      file_name TEXT NOT NULL,
-      mime_type TEXT NOT NULL,
-      file_size INTEGER,
-      width INTEGER,
-      height INTEGER,
-      uploaded_by INTEGER NOT NULL REFERENCES users(id),
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      deleted_at TEXT,
-      deleted_by INTEGER)`),
-    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_activity_albums_date ON activity_albums(deleted_at, event_date DESC, id DESC)"),
-    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_activity_photos_album ON activity_photos(album_id, deleted_at, id)"),
+    env.DB.prepare(ALBUMS_DDL("activity_albums")),
+    env.DB.prepare(PHOTOS_DDL("activity_photos")),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS activity_login_failures (
       email TEXT NOT NULL, ip TEXT, at TEXT NOT NULL DEFAULT (datetime('now')))`),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS activity_sync_state (key TEXT PRIMARY KEY, value TEXT)"),
+  ]);
+  await migrateV1(env);
+  await env.DB.batch([
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_activity_albums_date ON activity_albums(deleted_at, event_date, id)"),
+    env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_albums_folder ON activity_albums(drive_folder_id)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_activity_photos_album ON activity_photos(album_id, deleted_at, id)"),
+    env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_photos_file ON activity_photos(drive_file_id)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_activity_photos_parent ON activity_photos(drive_parent_id)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_activity_login_failures ON activity_login_failures(email, at)"),
   ]);
   schemaReady = true;
@@ -137,7 +173,7 @@ async function listAlbums(url, env) {
         (SELECT p.id FROM activity_photos p WHERE p.album_id = a.id AND p.deleted_at IS NULL ORDER BY p.id LIMIT 1)
       ) AS cover_id
     FROM activity_albums a LEFT JOIN users u ON u.id = a.created_by
-    WHERE ${where} ORDER BY a.event_date DESC, a.id DESC LIMIT ? OFFSET ?`)
+    WHERE ${where} ORDER BY a.event_date ASC, a.id ASC LIMIT ? OFFSET ?`)
     .bind(...binds, PAGE_SIZE + 1, (page - 1) * PAGE_SIZE).all();
   const items = rows.results || [];
   return json({ albums: items.slice(0, PAGE_SIZE), has_more: items.length > PAGE_SIZE, page });
@@ -172,9 +208,12 @@ async function createAlbum(request, env, user) {
   const eventDate = drive.thaiToday(); // ประทับวันที่อัตโนมัติ (วันที่สร้างงาน ตามเวลาไทย)
   const name = drive.folderName(title, eventDate);
   const folderId = await drive.createFolder(env, name);
-  const r = await env.DB.prepare("INSERT INTO activity_albums (title, event_date, folder_name, drive_folder_id, created_by) VALUES (?, ?, ?, ?, ?)")
+  // ซิงก์อาจเจอโฟลเดอร์ใหม่ก่อน → อัปเดตแถวเดิมให้เป็นของผู้สร้าง
+  await env.DB.prepare(`INSERT INTO activity_albums (title, event_date, folder_name, drive_folder_id, created_by, source) VALUES (?, ?, ?, ?, ?, 'web')
+    ON CONFLICT(drive_folder_id) DO UPDATE SET title = excluded.title, event_date = excluded.event_date, folder_name = excluded.folder_name, created_by = excluded.created_by, source = 'web'`)
     .bind(title, eventDate, name, folderId, user.id).run();
-  return json({ album: { id: r.meta.last_row_id, title, event_date: eventDate, folder_name: name } }, 201);
+  const row = await env.DB.prepare("SELECT id FROM activity_albums WHERE drive_folder_id = ?").bind(folderId).first();
+  return json({ album: { id: row.id, title, event_date: eventDate, folder_name: name } }, 201);
 }
 
 async function updateAlbum(request, env, user, id) {
@@ -235,10 +274,12 @@ async function uploadPhoto(request, env, user, albumId) {
   const name = safeFileName(file.name, mimeType);
   const uploaded = await drive.uploadFile(env, album.drive_folder_id, name, mimeType, new Uint8Array(await file.arrayBuffer()));
   const meta = uploaded.imageMediaMetadata || {};
-  const r = await env.DB.prepare(`INSERT INTO activity_photos (album_id, drive_file_id, file_name, mime_type, file_size, width, height, uploaded_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(albumId, uploaded.id, name, mimeType, file.size, meta.width || null, meta.height || null, user.id).run();
+  await env.DB.prepare(`INSERT INTO activity_photos (album_id, drive_file_id, drive_parent_id, file_name, mime_type, file_size, width, height, uploaded_by, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'web') ON CONFLICT(drive_file_id) DO UPDATE SET uploaded_by = excluded.uploaded_by, source = 'web'`)
+    .bind(albumId, uploaded.id, album.drive_folder_id, name, mimeType, file.size, meta.width || null, meta.height || null, user.id).run();
+  const row = await env.DB.prepare("SELECT id FROM activity_photos WHERE drive_file_id = ?").bind(uploaded.id).first();
   await env.DB.prepare("UPDATE activity_albums SET updated_at = datetime('now') WHERE id = ?").bind(albumId).run();
-  return json({ photo: { id: r.meta.last_row_id, file_name: name } }, 201);
+  return json({ photo: { id: row.id, file_name: name } }, 201);
 }
 
 async function deletePhoto(env, user, photoId, ctx) {
@@ -336,6 +377,13 @@ async function handle(request, env, ctx) {
 }
 
 export default {
+  // ซิงก์กับ Google Drive ทุก 10 นาที (wrangler.jsonc → triggers.crons)
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil((async () => {
+      await ensureSchema(env);
+      console.log("sync", JSON.stringify(await runSync(env)));
+    })());
+  },
   async fetch(request, env, ctx) {
     try {
       return await handle(request, env, ctx);

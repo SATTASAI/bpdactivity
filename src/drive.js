@@ -122,3 +122,30 @@ export async function fetchThumbnail(env, fileId, size) {
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   return res.ok ? res : null;
 }
+
+// รายการไฟล์ทั้งหมดตาม query (วนทุกหน้า)
+export async function listAll(env, q, fields) {
+  const out = [];
+  let pageToken = "";
+  do {
+    const params = new URLSearchParams({ q, fields: `nextPageToken,files(${fields})`, pageSize: "1000", supportsAllDrives: "true", includeItemsFromAllDrives: "true" });
+    if (pageToken) params.set("pageToken", pageToken);
+    const data = await (await driveFetch(env, `/files?${params}`)).json();
+    out.push(...(data.files || []));
+    pageToken = data.nextPageToken || "";
+  } while (pageToken);
+  return out;
+}
+
+export function escapeQuery(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+// "ชื่องาน (30 ต.ค. 2569)" → { title: "ชื่องาน", date: "2026-10-30" } ; ชื่อที่ไม่มีวันที่ท้าย → date = null
+export function parseFolderName(name) {
+  const m = String(name).match(/^(.*\S)\s*\((\d{1,2}) (\S+) (\d{4})\)$/);
+  const month = m ? THAI_MONTHS.indexOf(m[3]) : -1;
+  if (!m || month < 0) return { title: String(name).trim(), date: null };
+  const date = `${Number(m[4]) - 543}-${String(month + 1).padStart(2, "0")}-${String(m[2]).padStart(2, "0")}`;
+  return { title: m[1], date };
+}
