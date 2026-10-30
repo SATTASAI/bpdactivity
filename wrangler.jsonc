@@ -5,6 +5,8 @@
   "main": "src/index.js",
   "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
   // ซิงก์โฟลเดอร์/ภาพจาก Google Drive (src/sync.js)
+  // ดาวน์โหลดอัลบั้มเป็น zip ใช้ CPU คำนวณ CRC — ขยายเพดาน CPU ต่อคำขอ (Workers Paid)
+  "limits": { "cpu_ms": 300000 },
   "triggers": { "crons": ["*/10 * * * *"] },
   "routes": [{ "pattern": "activity.banpadengschool.ac.th", "custom_domain": true }],
   "vars": {

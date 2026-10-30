@@ -149,3 +149,14 @@ export function parseFolderName(name) {
   const date = `${Number(m[4]) - 543}-${String(month + 1).padStart(2, "0")}-${String(m[2]).padStart(2, "0")}`;
   return { title: m[1], date };
 }
+
+// ย้ายไฟล์ไปโฟลเดอร์อื่น
+export async function moveFile(env, fileId, toFolderId, fromFolderId) {
+  const params = new URLSearchParams({ addParents: toFolderId, supportsAllDrives: "true" });
+  if (fromFolderId && fromFolderId !== toFolderId) params.set("removeParents", fromFolderId);
+  await driveFetch(env, `/files/${encodeURIComponent(fileId)}?${params}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+}

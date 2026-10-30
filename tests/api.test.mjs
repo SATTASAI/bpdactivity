@@ -18,15 +18,15 @@ function d1(db) {
 
 const store = new Map();
 globalThis.caches = { default: { match: async (k) => store.get(k.url)?.clone(), put: async (k, r) => { store.set(k.url, r); }, delete: async (k) => store.delete(k.url) } };
-const driveCalls = [];
+const driveCalls = []; let uploadSeq = 0;
 globalThis.fetch = async (url, init = {}) => {
   url = String(url); driveCalls.push({ url, method: init.method || "GET", body: init.body });
   if (url.includes("oauth2")) return Response.json({ access_token: "tok", expires_in: 3600 });
-  if (url.includes("/upload/")) return Response.json({ id: `file${driveCalls.length}`, imageMediaMetadata: { width: 10, height: 8 } });
+  if (url.includes("/upload/")) return Response.json({ id: `file${++uploadSeq}`, imageMediaMetadata: { width: 10, height: 8 } });
   if (url.includes("fields=thumbnailLink")) return Response.json({ thumbnailLink: "https://lh3.example/t=s220" });
   if (url.startsWith("https://lh3.example/")) return new Response("THUMB", { headers: { "Content-Type": "image/jpeg" } });
   if (url.includes("alt=media")) return new Response("FULL", { headers: { "Content-Type": "image/jpeg" } });
-  if (url.endsWith("/files?fields=id&supportsAllDrives=true")) return Response.json({ id: "folder1" });
+  if (url.endsWith("/files?fields=id&supportsAllDrives=true")) return Response.json({ id: `folder${++uploadSeq}` });
   if (url.includes("/files?") && url.includes("q=")) return Response.json({ files: driveList(new URL(url).searchParams.get("q")) });
   return Response.json({});
 };
@@ -173,4 +173,56 @@ test("ย้ายตารางรุ่นแรก (created_by NOT NULL) ไ
   assert.equal(cols.find((c) => c.name === "created_by").notnull, 0);
   assert.equal(db2.prepare("SELECT drive_parent_id FROM activity_photos").get().drive_parent_id, "fX");
   assert.equal(db2.prepare("SELECT created_by FROM activity_albums").get().created_by, 1);
+});
+
+test("ล็อกอินได้แม้ไม่ได้ตั้ง JWT_SECRET, แก้วันที่/คำอธิบาย, ลบ/ย้ายหลายภาพ, ดาวน์โหลด zip", async () => {
+  const saved = env.JWT_SECRET; delete env.JWT_SECRET;
+  const c = await loginAs("admin@x.th");
+  assert.equal((await call("/api/me", { cookie: c })).data.user.full_name, "ผู้ดูแล");
+
+  const mk = async (title) => (await call("/api/albums", { method: "POST", body: { title }, cookie: c })).data.album.id;
+  const a = await mk("งาน A"), b = await mk("งาน B");
+
+  const ids = [];
+  for (const n of ["x.jpg", "x.jpg", "y.jpg"]) {
+    const fd = new FormData(); fd.append("file", new File([new Uint8Array([1, 2, 3, 4])], n, { type: "image/jpeg" }));
+    await call(`/api/albums/${a}/photos`, { method: "POST", body: fd, cookie: c });
+  }
+  for (const r of sql.prepare("SELECT id FROM activity_photos WHERE album_id = ? AND deleted_at IS NULL ORDER BY id").all(a)) ids.push(r.id);
+  assert.equal(ids.length, 3);
+
+  // แก้วันที่ + คำอธิบาย → ชื่อโฟลเดอร์ Drive เปลี่ยนตาม
+  driveCalls.length = 0;
+  assert.equal((await call(`/api/albums/${a}`, { method: "PATCH", body: { title: "งาน A", event_date: "2026-02-14", description: "กิจกรรมวันแห่งความรัก" }, cookie: c })).res.status, 200);
+  assert.ok(driveCalls.some((x) => String(x.body).includes("งาน A (14 ก.พ. 2569)")));
+  const shown = (await call(`/api/albums/${a}`)).data.album;
+  assert.equal(shown.event_date, "2026-02-14"); assert.equal(shown.description, "กิจกรรมวันแห่งความรัก");
+  assert.equal((await call(`/api/albums/${a}`, { method: "PATCH", body: { event_date: "2026-13-40" }, cookie: c })).res.status, 400);
+
+  // ดาวน์โหลด zip (ทุกคน)
+  const info = (await call(`/api/albums/${a}/download`)).data;
+  assert.equal(info.parts.length, 1); assert.equal(info.parts[0].count, 3);
+  const zres = await handle(new Request(O + info.parts[0].url), env, ctx);
+  const zbuf = new Uint8Array(await zres.arrayBuffer());
+  const { writeFileSync } = await import("node:fs"); const { execFileSync } = await import("node:child_process");
+  writeFileSync("/tmp/act-test.zip", zbuf);
+  const listing = execFileSync("unzip", ["-l", "/tmp/act-test.zip"]).toString();
+  assert.match(listing, /x \(2\)\.jpg/); assert.match(listing, /y\.jpg/);
+  execFileSync("unzip", ["-t", "/tmp/act-test.zip"]); // CRC ถูกต้อง
+
+  // ครูอื่นลบ/ย้ายภาพของคนอื่นไม่ได้
+  const c2 = await loginAs("t2@x.th");
+  assert.equal((await call("/api/photos/delete", { method: "POST", body: { ids }, cookie: c2 })).res.status, 403);
+  // ย้าย 2 ภาพไปงาน B
+  driveCalls.length = 0;
+  const mv = (await call("/api/photos/move", { method: "POST", body: { ids: ids.slice(0, 2), album_id: b }, cookie: c })).data;
+  assert.equal(mv.moved, 2);
+  assert.ok(driveCalls.some((x) => x.method === "PATCH" && x.url.includes("addParents=folder")));
+  assert.equal((await call(`/api/albums/${b}`)).data.photos.length, 2);
+  // ลบหลายภาพ
+  const del = (await call("/api/photos/delete", { method: "POST", body: { ids: ids.slice(0, 2) }, cookie: c })).data;
+  assert.equal(del.deleted, 2);
+  assert.equal((await call(`/api/albums/${b}`)).data.photos.length, 0);
+  assert.equal((await call("/api/album-options", { cookie: c })).data.albums.length >= 2, true);
+  env.JWT_SECRET = saved;
 });
