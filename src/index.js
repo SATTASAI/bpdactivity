@@ -1,6 +1,7 @@
 // ระบบภาพกิจกรรมโรงเรียนบ้านป่าเด็ง (activity.banpadengschool.ac.th)
 // - ทุกคนดูภาพได้ (สาธารณะ) · ครูล็อกอินด้วยบัญชีเดียวกับ system เพื่ออัพโหลด/แก้ไข/ลบ
 // - ภาพเก็บใน Google Drive: โฟลเดอร์ "ชื่องาน (30 ต.ค. 2569)" ใต้ ACTIVITY_DRIVE_FOLDER_ID
+import {schoolPasskeys} from './lib/school-passkeys.js';
 import { verifyPassword, signJWT, verifyJWT, buildSessionCookie, buildClearCookie, AUTH_COOKIE_NAME } from "./crypto.js";
 import * as drive from "./drive.js";
 import { runSync, displayDims } from "./sync.js";
@@ -179,6 +180,8 @@ function cleanAudience(value) {
 }
 // ลบภาพได้เฉพาะผู้ดูแลระบบ (ผู้ใช้ทุกคนอัพโหลดได้)
 const canDeletePhoto = (user) => !!user?.is_admin;
+
+const handleSchoolPasskeys=schoolPasskeys({currentUser,verifyPassword,roles:ROLES,issue:async(request,env,u)=>json({ok:true,user:{id:u.id,email:u.email,full_name:u.full_name,role:u.role,is_admin:ADMIN_ROLES.includes(u.role)}},200,{'Set-Cookie':buildSessionCookie(await signJWT({sub:u.id,sv:u.session_version||1,app:'activity'},await jwtSecret(env))),'Cache-Control':'no-store'})});
 
 async function login(request, env) {
   const body = await request.json().catch(() => ({}));
@@ -588,6 +591,7 @@ async function handle(request, env, ctx) {
   if (method !== "GET" && !sameOrigin(request)) return fail("คำขอไม่ถูกต้อง", 403);
   await ensureSchema(env);
 
+  if(path.startsWith("/api/passkeys"))return handleSchoolPasskeys(request,env);
   if (path === "/api/login" && method === "POST") return login(request, env);
   if (path === "/api/logout" && method === "POST") return json({ ok: true }, 200, { "Set-Cookie": buildClearCookie() });
 

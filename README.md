@@ -22,3 +22,11 @@
 
 ## ทดสอบ
 `npm test` (Node 22+)
+
+## Face ID / Passkey — Patch 1.2
+
+เข้าสู่ระบบด้วยรหัสผ่านเดิม แล้วเปิด **ตั้งค่า Passkey** เพื่อเพิ่มอุปกรณ์ ครั้งต่อไปกด **Face ID / Passkey** ได้ รหัสผ่านเดิมยังใช้สำรองได้ บัญชีโรงเรียนใช้ Passkey ร่วมกันระหว่าง system, grades, teachingmedia, activity และ publicservice บนโดเมนโรงเรียน
+
+รัน `npm ci` ก่อนทดสอบ/build ตาราง Passkey สร้างแบบ additive ในคำขอแรก ใช้ HTTPS; ไม่มีการเก็บภาพใบหน้า ลายนิ้วมือ หรือ private key
+
+[รายละเอียด วิธีใช้ ขอบเขต และผลตรวจสอบ](https://github.com/SATTASAI/banpadeng-school-db/blob/main/docs/passkeys.md)
