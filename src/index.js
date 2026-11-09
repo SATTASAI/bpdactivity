@@ -1,3 +1,4 @@
+import { FACEBOOK_DDL, FACEBOOK_JOBS_DDL, facebookConfig, recordFacebookPhoto, queueFacebook, facebookRoute, flushFacebook } from "./facebook.js";
 import { NOTIFY_DDL, queueUpload, flushNotifications } from "./notify.js";
 // ระบบภาพกิจกรรมโรงเรียนบ้านป่าเด็ง (activity.banpadengschool.ac.th)
 // - ทุกคนดูภาพได้ (สาธารณะ) · ครูล็อกอินด้วยบัญชีเดียวกับ system เพื่ออัพโหลด/แก้ไข/ลบ
@@ -89,6 +90,8 @@ export async function ensureSchema(env) {
   if (schemaReady) return;
   await env.DB.batch([
     env.DB.prepare(NOTIFY_DDL),
+    env.DB.prepare(FACEBOOK_DDL),
+    env.DB.prepare(FACEBOOK_JOBS_DDL),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS activity_notify_deliveries(delivery_key TEXT PRIMARY KEY)"),
     env.DB.prepare(ALBUMS_DDL("activity_albums")),
     env.DB.prepare(PHOTOS_DDL("activity_photos")),
@@ -356,6 +359,9 @@ async function uploadPhoto(request, env, user, albumId) {
   if (!file || typeof file === "string") return fail("ไม่พบไฟล์ภาพ");
   const batchId = String(form.get("batch_id") || crypto.randomUUID());
   if (!/^[a-zA-Z0-9-]{1,80}$/.test(batchId)) return fail("รหัสชุดอัปโหลดไม่ถูกต้อง");
+  const facebookSelected = form.get("facebook_selected") === "1";
+  if (facebookSelected && (!canManageAlbum(user, album) || album.audience !== "public")) return fail("เลือกส่ง Facebook ได้เฉพาะเจ้าของหรือผู้ดูแลอัลบั้มสาธารณะ",403);
+  if (facebookSelected && !facebookConfig(env).configured) return fail("ยังไม่ได้เชื่อมต่อเพจ Facebook",409);
   const mimeType = String(file.type || "").toLowerCase();
   if (!IMAGE_TYPES.includes(mimeType)) return fail("รองรับเฉพาะไฟล์ภาพ (JPG, PNG, WEBP, GIF, HEIC)");
   if (file.size > MAX_FILE_BYTES) return fail("ไฟล์ใหญ่เกิน 25 MB", 413);
@@ -371,6 +377,7 @@ async function uploadPhoto(request, env, user, albumId) {
   await env.DB.batch([
     env.DB.prepare("UPDATE activity_albums SET updated_at = datetime('now') WHERE id = ?").bind(albumId),
     queueUpload(env, albumId, user.id, batchId),
+    ...(facebookSelected ? [recordFacebookPhoto(env, albumId, user.id, batchId, row.id)] : []),
   ]);
   return json({ photo: { id: row.id, file_name: name } }, 201);
 }
@@ -488,7 +495,7 @@ async function bulkAudience(request, env, user, ctx) {
 // รายชื่ออัลบั้มทั้งหมด (สำหรับเลือกอัลบั้มตอนอัพโหลด/ย้ายภาพ)
 async function albumOptions(env, user) {
   const visible = visibleSql(user);
-  const rows = await env.DB.prepare(`SELECT a.id, a.title, a.event_date, a.audience FROM activity_albums a WHERE a.deleted_at IS NULL AND ${visible.sql} ORDER BY a.event_date DESC, a.id DESC LIMIT 2000`).bind(...visible.binds).all();
+  const rows = await env.DB.prepare(`SELECT a.id, a.title, a.event_date, a.audience, a.created_by FROM activity_albums a WHERE a.deleted_at IS NULL AND ${visible.sql} ORDER BY a.event_date DESC, a.id DESC LIMIT 2000`).bind(...visible.binds).all();
   return json({ albums: rows.results || [] });
 }
 
@@ -649,6 +656,13 @@ async function handleApi(request, env, ctx, url, path, method, user) {
 
   // ด้านล่างต้องล็อกอิน
   if (!user) return fail("กรุณาเข้าสู่ระบบ", 401);
+  if (path === "/api/facebook/status" && method === "GET") return facebookRoute(request,env,user,null,"status");
+  const facebookMatch=path.match(/^\/api\/albums\/(\d+)\/facebook(\/retry)?$/);
+  if(facebookMatch && ((method==="GET"&&!facebookMatch[2])||(method==="POST"&&facebookMatch[2]))){
+    const response=await facebookRoute(request,env,user,await getAlbum(env,Number(facebookMatch[1])),facebookMatch[2]?"retry":"list");
+    if(method==="POST"&&response.ok)ctx.waitUntil(flushFacebook(env));
+    return response;
+  }
   if (path === "/api/albums" && method === "POST") return createAlbum(request, env, user);
   if (path === "/api/albums/audience" && method === "POST") return bulkAudience(request, env, user, ctx);
   if (albumMatch && method === "PATCH") return updateAlbum(request, env, user, Number(albumMatch[1]), ctx);
@@ -660,8 +674,10 @@ async function handleApi(request, env, ctx, url, path, method, user) {
     if (!/^[a-zA-Z0-9-]{1,80}$/.test(batchId)) return fail("รหัสชุดอัปโหลดไม่ถูกต้อง");
     await env.DB.prepare(`UPDATE activity_notify_batches SET ready_at=? WHERE album_id=? AND user_id=? AND batch_id=? AND sent_at IS NULL`)
       .bind(Date.now(),Number(complete[1]),user.id,batchId).run();
-    ctx.waitUntil(flushNotifications(env));
-    return json({ ok:true });
+    const album=await getAlbum(env,Number(complete[1]));
+    const facebook=album?await queueFacebook(env,user,album,batchId,body.facebook):{status:"blocked",error:"ไม่พบอัลบั้ม"};
+    ctx.waitUntil(Promise.all([flushNotifications(env),flushFacebook(env)]));
+    return json({ ok:true,facebook });
   }
   const upload = path.match(/^\/api\/albums\/(\d+)\/photos$/);
   if (upload && method === "POST") return uploadPhoto(request, env, user, Number(upload[1]));
@@ -679,7 +695,7 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
       await ensureSchema(env);
-      await flushNotifications(env);
+      await Promise.all([flushNotifications(env),flushFacebook(env)]);
       if (new Date(event.scheduledTime).getUTCMinutes() % 10 === 0)
         console.log("sync", JSON.stringify(await runSync(env)));
     })());
