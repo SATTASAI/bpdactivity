@@ -1,3 +1,4 @@
+import {mountFacebookPicker} from "/facebook-picker.js";
 // หน้าเว็บภาพกิจกรรม: #/ = รายการงาน, #/album/:id = ภาพในงาน
 const $ = (sel, el = document) => el.querySelector(sel);
 const app = $("#app");
@@ -99,7 +100,7 @@ function albumDialog(album) {
 async function albumOptionsHtml(excludeId) {
   const { albums } = await api("/api/album-options");
   return albums.filter((a) => a.id !== excludeId)
-    .map((a) => `<option value="${a.id}">${esc(a.title)} · ${thaiDate(a.event_date)}${a.audience && a.audience !== "public" ? ` · ${AUDIENCE_SHORT[a.audience]}` : ""}</option>`).join("");
+    .map((a) => `<option value="${a.id}" data-audience="${esc(a.audience||"public")}" data-can-publish="${state.user?.is_admin||Number(a.created_by)===Number(state.user?.id)?"1":"0"}">${esc(a.title)} · ${thaiDate(a.event_date)}${a.audience && a.audience !== "public" ? ` · ${AUDIENCE_SHORT[a.audience]}` : ""}</option>`).join("");
 }
 
 // อัพโหลดจากหน้ารวม: เลือกอัลบั้มเดิมหรือสร้างใหม่ + เลือกภาพ (ไม่จำกัดจำนวน)
@@ -113,9 +114,11 @@ async function quickUploadDialog() {
     <div data-mode="new">${audienceSelect()}</div>
     <label class="field" data-mode="old" hidden>อัลบั้ม<select name="album">${options}</select></label>
     <label class="field">ภาพ<input name="files" type="file" accept="image/*" multiple required></label>
+    <div id="quickFacebookPicker"></div>
     <p class="err"></p>
     <div class="dlg-actions"><button class="btn ghost" value="cancel" formnovalidate>ยกเลิก</button><button class="btn" value="ok">${ICON.upload} อัพโหลด</button></div>`,
   async (fd) => {
+    const facebook=picker.read();
     const files = fd.getAll("files").filter((f) => f && f.size);
     if (!files.length) throw new Error("กรุณาเลือกภาพ");
     let albumId;
@@ -128,9 +131,16 @@ async function quickUploadDialog() {
       albumId = (await api("/api/albums", { method: "POST", body: { title, audience: fd.get("audience") } })).album.id;
     }
     location.hash = `#/album/${albumId}`;
-    uploadFiles(files, albumId);
+    uploadFiles(files, albumId, facebook);
   });
   const form = $("#dialogForm");
+  const oldOption=()=>form.querySelector('[name="album"]').selectedOptions[0];
+  const picker=mountFacebookPicker($("#quickFacebookPicker"),{api,
+    audience:()=>form.querySelector('input[name="mode"]:checked').value==="new"?form.querySelector('[name="audience"]').value:oldOption()?.dataset.audience||"public",
+    canPublish:()=>form.querySelector('input[name="mode"]:checked').value==="new"||oldOption()?.dataset.canPublish==="1"});
+  form.querySelector('[name="files"]').addEventListener("change",event=>picker.setFiles([...event.target.files]));
+  form.addEventListener("change",()=>picker.update());
+  dialog.addEventListener("close",()=>picker.dispose(),{once:true});
   form.querySelectorAll('input[name="mode"]').forEach((r) => r.onchange = () => {
     const mode = form.querySelector('input[name="mode"]:checked').value;
     form.querySelectorAll("[data-mode]").forEach((el) => { el.hidden = el.dataset.mode !== mode; });
@@ -456,6 +466,7 @@ function renderAlbum() {
     </div>` : ""}
     ${state.user ? `<div class="dropzone" id="drop">${ICON.upload}<div><b>เลือกภาพ</b> หรือลากภาพมาวางที่นี่ (เลือกได้ไม่จำกัดจำนวน)</div><small>JPG, PNG, WEBP, HEIC · ไม่เกิน 25 MB ต่อภาพ</small>
       <input id="files" type="file" accept="image/*" multiple hidden></div><div id="progress"></div>` : ""}
+    ${manage ? '<section id="facebookJobs" class="facebook-jobs" aria-live="polite"></section>' : ""}
     ${state.photos.length ? `<div class="photos${state.selecting ? " selecting" : ""}">${state.photos.map((p, i) => `
       <div class="photo${sel.has(p.id) ? " picked" : ""}${state.selecting && !canDelete(p) ? " locked" : ""}" data-i="${i}" data-id="${p.id}" tabindex="0" role="button" aria-label="${state.selecting ? "เลือก" : "ดู"}ภาพ ${i + 1}: ${esc(p.file_name)}"${state.selecting ? ` aria-pressed="${sel.has(p.id)}"` : ""}>
         <img src="/img/${p.id}/thumb?v=3" alt="${esc(p.file_name)}" loading="lazy">
@@ -467,6 +478,7 @@ function renderAlbum() {
         </div>` : ""}
       </div>`).join("")}</div>` : `<div class="empty">ยังไม่มีภาพในงานนี้</div>`}`;
 
+  if(manage)refreshFacebookJobs(a.id);
   if ($("#dlAlbum")) $("#dlAlbum").onclick = () => downloadAlbum(a);
   if ($("#selectMode")) $("#selectMode").onclick = () => { state.selecting = !state.selecting; state.selected.clear(); renderAlbum(); };
   if (state.selecting) {
@@ -558,20 +570,43 @@ async function downloadAlbum(a) {
   } catch (x) { toast(x.message, true); }
 }
 
+
+function chooseUploadDialog(files,album){
+  if(uploading)return toast("กำลังอัปโหลดชุดก่อนหน้า",true);
+  openDialog(`<h2>อัปโหลด ${files.length} ภาพ</h2><p class="hint">ภาพทั้งหมดเก็บในอัลบั้ม เลือกเพิ่มได้ว่าจะส่งภาพใดขึ้นเพจ</p><div id="albumFacebookPicker"></div><p class="err"></p><div class="dlg-actions"><button class="btn ghost" value="cancel" formnovalidate>ยกเลิก</button><button class="btn" value="ok">อัปโหลดและบันทึก</button></div>`,async()=>{
+    const options=picker.read();uploadFiles(files,album.id,options);
+  });
+  const picker=mountFacebookPicker($("#albumFacebookPicker"),{api,files,audience:()=>album.audience||"public",canPublish:()=>state.user?.is_admin||Number(album.created_by)===Number(state.user?.id)});
+  dialog.addEventListener("close",()=>picker.dispose(),{once:true});
+}
+async function refreshFacebookJobs(albumId){
+  try{
+    const data=await api(`/api/albums/${albumId}/facebook`);
+    if(state.album?.id!==albumId||!$("#facebookJobs"))return;
+    state.facebookPending=data.jobs.some(j=>["queued","uploading","publishing"].includes(j.status));
+    const labels={queued:"รอส่ง",uploading:"กำลังส่งภาพ",publishing:"กำลังเผยแพร่",published:"เผยแพร่แล้ว",failed:"ส่งไม่สำเร็จ",needs_review:"ต้องตรวจสอบบนเพจ",cancelled:"ยกเลิกแล้ว"};
+    $("#facebookJobs").innerHTML=data.jobs.length?`<h2>การเผยแพร่ Facebook</h2>${data.jobs.map(j=>`<article class="facebook-job"><div><strong>${esc(labels[j.status]||j.status)} · ${j.photo_count} ภาพ</strong>${j.error?`<p class="err">${esc(j.error)}</p>`:""}</div>${j.url?`<a class="btn ghost sm" href="${esc(j.url)}" target="_blank" rel="noopener">ดูโพสต์บนเพจ ↗</a>`:""}${j.status==="failed"?`<button class="btn ghost sm" type="button" data-fb-retry="${j.id}">ลองส่งใหม่</button>`:""}</article>`).join("")}`:"";
+    $("#facebookJobs").querySelectorAll("[data-fb-retry]").forEach(button=>button.onclick=async()=>{
+      button.disabled=true;try{await api(`/api/albums/${albumId}/facebook/retry`,{method:"POST",body:{job_id:Number(button.dataset.fbRetry)}});await refreshFacebookJobs(albumId);}catch(e){toast(e.message,true);button.disabled=false;}
+    });
+  }catch{/* Upload and browsing remain available when Facebook status is unavailable. */}
+}
+setInterval(()=>{if(!document.hidden&&state.facebookPending&&state.album)refreshFacebookJobs(state.album.id);},15000);
+
 // ---------- อัพโหลด (ทีละไฟล์ พร้อมกัน 3 ไฟล์) ----------
 function bindUpload() {
   const drop = $("#drop"), input = $("#files");
   drop.onclick = () => input.click();
-  input.onchange = () => { uploadFiles([...input.files], state.album.id); input.value = ""; };
+  input.onchange = () => { chooseUploadDialog([...input.files], state.album); input.value = ""; };
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
   drop.ondragleave = () => drop.classList.remove("over");
-  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); uploadFiles([...e.dataTransfer.files], state.album.id); };
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); chooseUploadDialog([...e.dataTransfer.files], state.album); };
 }
 
-function uploadOne(albumId, file, onProgress, batchId) {
+function uploadOne(albumId, file, onProgress, batchId, facebookSelected=false) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const fd = new FormData(); fd.append("file", file, file.name); fd.append("batch_id", batchId);
+    const fd = new FormData(); fd.append("file", file, file.name); fd.append("batch_id", batchId); if(facebookSelected)fd.append("facebook_selected","1");
     xhr.open("POST", `/api/albums/${albumId}/photos`);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
     xhr.onload = () => {
@@ -584,7 +619,7 @@ function uploadOne(albumId, file, onProgress, batchId) {
 }
 
 let uploading = false;
-async function uploadFiles(files, albumId) {
+async function uploadFiles(files, albumId, facebook={enabled:false,selected:new Set()}) {
   const images = files.filter((f) => f.type.startsWith("image/") || /\.(heic|heif)$/i.test(f.name));
   if (!images.length) return toast("กรุณาเลือกไฟล์ภาพ", true);
   if (uploading) return toast("กำลังอัพโหลดชุดก่อนหน้า กรุณารอสักครู่", true);
@@ -603,20 +638,32 @@ async function uploadFiles(files, albumId) {
   const worker = async () => {
     while (next < images.length) {
       const i = next++;
-      try { await uploadOne(albumId, images[i], (p) => { progress[i] = p; paint(); }, batchId); }
+      try { await uploadOne(albumId, images[i], (p) => { progress[i] = p; paint(); }, batchId, facebook.enabled&&facebook.selected.has(images[i])); }
       catch (x) { failed.push(`${images[i].name}: ${x.message}`); }
       progress[i] = 1; done++; paint();
     }
   };
   await Promise.all([worker(), worker(), worker()]);
   if (failed.length < images.length) {
-    try { await api(`/api/albums/${albumId}/upload-complete`, { method: "POST", body: { batch_id: batchId } }); }
-    catch { /* The server's pending batch is delivered by cron if this request fails. */ }
+    const complete=async()=>{
+      const result=await api(`/api/albums/${albumId}/upload-complete`,{method:"POST",body:{batch_id:batchId,facebook:{enabled:facebook.enabled,caption:facebook.caption||"",expected_count:facebook.expected_count||0}}});
+      if(result.facebook?.status==="blocked")throw Error(result.facebook.error);
+      if(facebook.enabled)toast(`อัปโหลดแล้ว · รอส่ง Facebook ${result.facebook.photo_count} ภาพ`);
+    };
+    try { await complete(); }
+    catch(error) {
+      facebook.error=error.message;
+      if(state.album?.id===albumId){
+        const box=$("#progress");
+        if(box){box.innerHTML='<p class="err"></p><button class="btn ghost" type="button">ลองยืนยันการเผยแพร่อีกครั้ง</button>';box.querySelector("p").textContent="ภาพยังอยู่ใน bpdactivity · "+error.message;box.querySelector("button").onclick=async()=>{try{await complete();facebook.error=null;box.replaceChildren();refreshFacebookJobs(albumId);}catch(e){box.querySelector("p").textContent=e.message;}};}
+      }
+    }
   }
   window.onbeforeunload = null; uploading = false;
   if (failed.length) toast(`อัพโหลดไม่สำเร็จ ${failed.length} ภาพ — ${failed[0]}`, true);
-  else toast(`อัพโหลดครบ ${images.length} ภาพแล้ว`);
-  if (state.album?.id === albumId) loadAlbum(albumId);
+  else if(facebook.error)toast("ภาพอัปโหลดแล้ว แต่ยังไม่เผยแพร่ Facebook: "+facebook.error,true);
+  else if(!facebook.enabled)toast(`อัพโหลดครบ ${images.length} ภาพแล้ว`);
+  if (state.album?.id === albumId && !facebook.error) loadAlbum(albumId);
   loadSidebar();
 }
 
@@ -733,4 +780,3 @@ window.addEventListener("hashchange", route);
   });
   renderTop(); route(); loadSidebar();
 })();
-

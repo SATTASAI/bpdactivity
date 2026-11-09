@@ -327,3 +327,28 @@ test('upload-complete groups successful photos by uploader and requires authenti
   await call(`/api/albums/${id}/upload-complete`,{method:'POST',cookie:other,body:{batch_id:'api-notify-batch'}});assert.ok(row().ready_at>Date.now());
   const completed=await call(`/api/albums/${id}/upload-complete`,{method:'POST',cookie,body:{batch_id:'api-notify-batch'}});assert.equal(completed.res.status,200);assert.ok(row().ready_at<=Date.now());
 });
+test('Facebook uploads record only selected files, publish after completion, and reject other album managers', async () => {
+  const cookie=await loginAs('t1@x.th'),other=await loginAs('t2@x.th');
+  const created=await call('/api/albums',{method:'POST',cookie,body:{title:'Facebook เลือกภาพ'}}),id=created.data.album.id;
+  const originalFetch=globalThis.fetch;let media=500,posts=0;
+  env.FACEBOOK_PAGE_ID='123';env.FACEBOOK_PAGE_ACCESS_TOKEN='test-token';
+  globalThis.fetch=async(url,init)=>String(url).startsWith('https://graph.facebook.com/')?Response.json({id:String(url).endsWith('/feed')?(posts++,'123_456'):String(media++)}):originalFetch(url,init);
+  try{
+    assert.equal((await call('/api/facebook/status')).res.status,401);
+    assert.equal((await call('/api/facebook/status',{cookie})).data.configured,true);
+    const uploaded=[];
+    for(let i=0;i<3;i++){
+      const fd=new FormData();fd.append('file',new File(['image'],`fb${i}.jpg`,{type:'image/jpeg'}));fd.append('batch_id','facebook-api-batch');if(i!==1)fd.append('facebook_selected','1');
+      const result=await call(`/api/albums/${id}/photos`,{method:'POST',cookie,body:fd});assert.equal(result.res.status,201);uploaded.push(result.data.photo.id);
+    }
+    assert.equal(posts,0);
+    const denied=new FormData();denied.append('file',new File(['image'],'denied.jpg',{type:'image/jpeg'}));denied.append('facebook_selected','1');
+    assert.equal((await call(`/api/albums/${id}/photos`,{method:'POST',cookie:other,body:denied})).res.status,403);
+    const result=await call(`/api/albums/${id}/upload-complete`,{method:'POST',cookie,body:{batch_id:'facebook-api-batch',facebook:{enabled:true,expected_count:2}}});
+    assert.equal(result.data.facebook.photo_count,2);
+    await new Promise(resolve=>setImmediate(resolve));
+    const row=sql.prepare('SELECT * FROM activity_facebook_jobs WHERE album_id=?').get(id);assert.deepEqual(JSON.parse(row.photo_ids),[uploaded[0],uploaded[2]]);assert.equal(posts,1);
+    assert.equal((await call(`/api/albums/${id}/facebook`,{cookie:other})).res.status,403);
+    const status=await call(`/api/albums/${id}/facebook`,{cookie});assert.equal(status.data.jobs[0].status,'published');assert.equal(status.data.jobs[0].url,'https://www.facebook.com/123_456');
+  }finally{globalThis.fetch=originalFetch;delete env.FACEBOOK_PAGE_ID;delete env.FACEBOOK_PAGE_ACCESS_TOKEN;}
+});
