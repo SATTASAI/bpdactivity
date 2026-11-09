@@ -311,3 +311,19 @@ test("เปลี่ยน Audience หลายอัลบั้มพร้�
   assert.equal((await call("/api/albums/audience", { method: "POST", body: { ids: [a], audience: "x" }, cookie: c1 })).res.status, 400);
   assert.equal((await call("/api/albums/audience", { method: "POST", body: { ids: [a], audience: "public" } })).res.status, 401);
 });
+
+test('upload-complete groups successful photos by uploader and requires authentication', async () => {
+  const cookie = await loginAs('t1@x.th');
+  const { data: created } = await call('/api/albums', { method:'POST', cookie, body:{title:'แจ้งเตือนหนึ่งชุด'} });
+  const id=created.album.id;
+  for (let i=0;i<2;i++) {
+    const fd=new FormData();fd.append('file',new File(['image'],`notify${i}.jpg`,{type:'image/jpeg'}));fd.append('batch_id','api-notify-batch');
+    const {res}=await call(`/api/albums/${id}/photos`,{method:'POST',cookie,body:fd});assert.equal(res.status,201);
+  }
+  const row=()=>sql.prepare('SELECT * FROM activity_notify_batches WHERE album_id=? AND batch_id=?').get(id,'api-notify-batch');
+  assert.equal(row().photo_count,2);assert.ok(row().ready_at>Date.now());
+  const denied=await call(`/api/albums/${id}/upload-complete`,{method:'POST',body:{batch_id:'api-notify-batch'}});assert.equal(denied.res.status,401);
+  const other=await loginAs('t2@x.th');
+  await call(`/api/albums/${id}/upload-complete`,{method:'POST',cookie:other,body:{batch_id:'api-notify-batch'}});assert.ok(row().ready_at>Date.now());
+  const completed=await call(`/api/albums/${id}/upload-complete`,{method:'POST',cookie,body:{batch_id:'api-notify-batch'}});assert.equal(completed.res.status,200);assert.ok(row().ready_at<=Date.now());
+});

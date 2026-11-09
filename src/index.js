@@ -1,3 +1,4 @@
+import { NOTIFY_DDL, queueUpload, flushNotifications } from "./notify.js";
 // ระบบภาพกิจกรรมโรงเรียนบ้านป่าเด็ง (activity.banpadengschool.ac.th)
 // - ทุกคนดูภาพได้ (สาธารณะ) · ครูล็อกอินด้วยบัญชีเดียวกับ system เพื่ออัพโหลด/แก้ไข/ลบ
 // - ภาพเก็บใน Google Drive: โฟลเดอร์ "ชื่องาน (30 ต.ค. 2569)" ใต้ ACTIVITY_DRIVE_FOLDER_ID
@@ -87,6 +88,8 @@ let schemaReady = false;
 export async function ensureSchema(env) {
   if (schemaReady) return;
   await env.DB.batch([
+    env.DB.prepare(NOTIFY_DDL),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS activity_notify_deliveries(delivery_key TEXT PRIMARY KEY)"),
     env.DB.prepare(ALBUMS_DDL("activity_albums")),
     env.DB.prepare(PHOTOS_DDL("activity_photos")),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS activity_login_failures (
@@ -351,6 +354,8 @@ async function uploadPhoto(request, env, user, albumId) {
   const form = await request.formData().catch(() => null);
   const file = form?.get("file");
   if (!file || typeof file === "string") return fail("ไม่พบไฟล์ภาพ");
+  const batchId = String(form.get("batch_id") || crypto.randomUUID());
+  if (!/^[a-zA-Z0-9-]{1,80}$/.test(batchId)) return fail("รหัสชุดอัปโหลดไม่ถูกต้อง");
   const mimeType = String(file.type || "").toLowerCase();
   if (!IMAGE_TYPES.includes(mimeType)) return fail("รองรับเฉพาะไฟล์ภาพ (JPG, PNG, WEBP, GIF, HEIC)");
   if (file.size > MAX_FILE_BYTES) return fail("ไฟล์ใหญ่เกิน 25 MB", 413);
@@ -363,7 +368,10 @@ async function uploadPhoto(request, env, user, albumId) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'web') ON CONFLICT(drive_file_id) DO UPDATE SET uploaded_by = excluded.uploaded_by, source = 'web'`)
     .bind(albumId, uploaded.id, album.drive_folder_id, name, mimeType, file.size, dimW, dimH, rotation, user.id).run();
   const row = await env.DB.prepare("SELECT id FROM activity_photos WHERE drive_file_id = ?").bind(uploaded.id).first();
-  await env.DB.prepare("UPDATE activity_albums SET updated_at = datetime('now') WHERE id = ?").bind(albumId).run();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE activity_albums SET updated_at = datetime('now') WHERE id = ?").bind(albumId),
+    queueUpload(env, albumId, user.id, batchId),
+  ]);
   return json({ photo: { id: row.id, file_name: name } }, 201);
 }
 
@@ -645,6 +653,16 @@ async function handleApi(request, env, ctx, url, path, method, user) {
   if (path === "/api/albums/audience" && method === "POST") return bulkAudience(request, env, user, ctx);
   if (albumMatch && method === "PATCH") return updateAlbum(request, env, user, Number(albumMatch[1]), ctx);
   if (albumMatch && method === "DELETE") return deleteAlbum(env, user, Number(albumMatch[1]), ctx);
+  const complete = path.match(/^\/api\/albums\/(\d+)\/upload-complete$/);
+  if (complete && method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const batchId = String(body.batch_id || "");
+    if (!/^[a-zA-Z0-9-]{1,80}$/.test(batchId)) return fail("รหัสชุดอัปโหลดไม่ถูกต้อง");
+    await env.DB.prepare(`UPDATE activity_notify_batches SET ready_at=? WHERE album_id=? AND user_id=? AND batch_id=? AND sent_at IS NULL`)
+      .bind(Date.now(),Number(complete[1]),user.id,batchId).run();
+    ctx.waitUntil(flushNotifications(env));
+    return json({ ok:true });
+  }
   const upload = path.match(/^\/api\/albums\/(\d+)\/photos$/);
   if (upload && method === "POST") return uploadPhoto(request, env, user, Number(upload[1]));
   if (path === "/api/album-options" && method === "GET") return albumOptions(env, user);
@@ -661,7 +679,9 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
       await ensureSchema(env);
-      console.log("sync", JSON.stringify(await runSync(env)));
+      await flushNotifications(env);
+      if (new Date(event.scheduledTime).getUTCMinutes() % 10 === 0)
+        console.log("sync", JSON.stringify(await runSync(env)));
     })());
   },
   async fetch(request, env, ctx) {

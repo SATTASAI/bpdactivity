@@ -150,6 +150,26 @@ function renderTop() {
   }
 }
 
+// Mobile navigation uses the same permissions and dialogs as desktop.
+function accountDialog() {
+  if (!state.user) return loginDialog();
+  openDialog(`<h2>บัญชีของฉัน</h2><p class="hint">${esc(state.user.full_name)}</p>
+    <div class="account-actions"><a class="btn ghost" href="/passkeys.html">${ICON.user} ตั้งค่า Face ID / Passkey</a>
+    <button type="button" class="btn ghost" id="accountLogout">${ICON.logout} ออกจากระบบ</button></div>
+    <div class="dlg-actions"><button class="btn" value="cancel" formnovalidate>ปิด</button></div>`, async () => {});
+  $("#accountLogout").onclick = async () => {
+    await api("/api/logout", { method: "POST" }).catch(() => {});
+    state.user = null; dialog.close(); renderTop(); route();
+  };
+}
+$("#navAccount").onclick = () => { closeMobileMenu(); accountDialog(); };
+$("[data-tab=home]").onclick = () => {
+  closeMobileMenu();
+  if (!/^#\/album\//.test(location.hash)) window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+};
+$("#navUpload").onclick = () => { closeMobileMenu(); quickUploadDialog(); };
+$("#navAlbums").onclick = () => $("#mobileMenu").click();
+
 // ---------- เมนูอัลบั้ม ----------
 const layout = $("#layout"), sidebar = $("#albumSidebar");
 const narrowScreen = window.matchMedia("(max-width: 760px)");
@@ -165,6 +185,11 @@ function updateSidebarLayout() {
   $("#topActions").inert = narrowScreen.matches && mobileOpen;
   $("#sidebarScrim").hidden = !mobileOpen || !narrowScreen.matches;
   $("#mobileMenu").setAttribute("aria-expanded", String(mobileOpen && narrowScreen.matches));
+  $("#navAlbums").setAttribute("aria-expanded", String(mobileOpen && narrowScreen.matches));
+  $("#navAlbums").classList.toggle("active", mobileOpen && narrowScreen.matches);
+  $("[data-tab=home]").classList.toggle("active", !mobileOpen && !/^#\/album\//.test(location.hash));
+  if (!/^#\/album\//.test(location.hash)) $("[data-tab=home]").setAttribute("aria-current", "page");
+  else $("[data-tab=home]").removeAttribute("aria-current");
   const expanded = narrowScreen.matches ? mobileOpen : !collapsed;
   $("#sidebarToggle").setAttribute("aria-expanded", String(expanded));
   $("#sidebarToggle").setAttribute("aria-label", expanded ? "ยุบเมนูอัลบั้ม" : "ขยายเมนูอัลบั้ม");
@@ -174,7 +199,7 @@ function updateSidebarLayout() {
 }
 function closeMobileMenu(restoreFocus = false) {
   mobileOpen = false; updateSidebarLayout();
-  if (restoreFocus && narrowScreen.matches) $("#mobileMenu").focus();
+  if (restoreFocus && narrowScreen.matches) $("#navAlbums").focus();
 }
 function toggleSidebar() {
   if (narrowScreen.matches) closeMobileMenu(true);
@@ -264,7 +289,7 @@ async function loadList(append = false) {
   state.list.page = page; state.list.hasMore = data.has_more;
   renderListBody();
 }
-function renderList() {
+function renderList(restore = false) {
   state.album = null;
   app.innerHTML = `<section class="hero">
       <div><h1>ภาพกิจกรรมโรงเรียน</h1><p>รวมภาพกิจกรรมของโรงเรียนบ้านป่าเด็ง</p></div>
@@ -335,6 +360,24 @@ function renderList() {
     state.list.audience = e.target.value; $("#listBody").setAttribute("aria-busy", "true");
     loadList().catch((x) => { if (view === state.viewVersion) { $("#listBody").setAttribute("aria-busy", "false"); toast(x.message, true); } });
   };
+  if (restore && state.list.albums.length) {
+    renderListBody();
+    // Keep loaded pages while refreshing so Back retains its place and updated counts.
+    const request = ++state.listRequest;
+    const { q, audience, page: pages } = state.list;
+    (async () => {
+      const albums = []; let hasMore = false;
+      for (let page = 1; page <= pages; page++) {
+        const data = await api(`/api/albums?page=${page}${q ? `&q=${encodeURIComponent(q)}` : ""}${audience ? `&audience=${audience}` : ""}`);
+        if (view !== state.viewVersion || request !== state.listRequest) return;
+        albums.push(...data.albums); hasMore = data.has_more;
+        if (!hasMore) { state.list.page = page; break; }
+      }
+      state.list.albums = albums; state.list.hasMore = hasMore;
+      renderListBody();
+    })().catch(x => { if (view === state.viewVersion) toast(x.message, true); });
+    return;
+  }
   loadList().catch((x) => {
     if (view !== state.viewVersion) return;
     $("#listBody").setAttribute("aria-busy", "false");
@@ -374,7 +417,7 @@ async function loadAlbum(id) {
     const data = await api(`/api/albums/${id}`);
     if (view !== state.viewVersion) return;
     state.album = data.album; state.photos = data.photos;
-    renderAlbum();
+    renderAlbum(); enterPage();
   } catch (x) {
     if (view !== state.viewVersion) return;
     app.innerHTML = `<a class="back" href="#/">${ICON.back} กลับหน้ารวม</a><div class="empty">${esc(x.message)}</div>`;
@@ -525,10 +568,10 @@ function bindUpload() {
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); uploadFiles([...e.dataTransfer.files], state.album.id); };
 }
 
-function uploadOne(albumId, file, onProgress) {
+function uploadOne(albumId, file, onProgress, batchId) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const fd = new FormData(); fd.append("file", file, file.name);
+    const fd = new FormData(); fd.append("file", file, file.name); fd.append("batch_id", batchId);
     xhr.open("POST", `/api/albums/${albumId}/photos`);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
     xhr.onload = () => {
@@ -546,6 +589,7 @@ async function uploadFiles(files, albumId) {
   if (!images.length) return toast("กรุณาเลือกไฟล์ภาพ", true);
   if (uploading) return toast("กำลังอัพโหลดชุดก่อนหน้า กรุณารอสักครู่", true);
   uploading = true;
+  const batchId = crypto.randomUUID();
   const progress = new Array(images.length).fill(0);
   let done = 0; const failed = [];
   const paint = () => {
@@ -559,12 +603,16 @@ async function uploadFiles(files, albumId) {
   const worker = async () => {
     while (next < images.length) {
       const i = next++;
-      try { await uploadOne(albumId, images[i], (p) => { progress[i] = p; paint(); }); }
+      try { await uploadOne(albumId, images[i], (p) => { progress[i] = p; paint(); }, batchId); }
       catch (x) { failed.push(`${images[i].name}: ${x.message}`); }
       progress[i] = 1; done++; paint();
     }
   };
   await Promise.all([worker(), worker(), worker()]);
+  if (failed.length < images.length) {
+    try { await api(`/api/albums/${albumId}/upload-complete`, { method: "POST", body: { batch_id: batchId } }); }
+    catch { /* The server's pending batch is delivered by cron if this request fails. */ }
+  }
   window.onbeforeunload = null; uploading = false;
   if (failed.length) toast(`อัพโหลดไม่สำเร็จ ${failed.length} ภาพ — ${failed[0]}`, true);
   else toast(`อัพโหลดครบ ${images.length} ภาพแล้ว`);
@@ -580,13 +628,13 @@ function openLightbox(i) {
   lbIndex = i; lbOpener = document.activeElement;
   previousOverflow = document.body.style.overflow;
   lb.hidden = false; document.body.style.overflow = "hidden";
-  layout.inert = true; $(".topbar").inert = true;
+  layout.inert = true; $(".topbar").inert = true; $("#bottomNav").inert = true;
   showLb(); $(".lb-close").focus();
 }
 function closeLightbox() {
   lb.hidden = true;
   const img = $("#lbImg"); img.onload = img.onerror = null; img.removeAttribute("src");
-  layout.inert = false; $(".topbar").inert = false;
+  layout.inert = false; $(".topbar").inert = false; $("#bottomNav").inert = false;
   document.body.style.overflow = previousOverflow;
   if (lbOpener?.isConnected) lbOpener.focus();
 }
@@ -651,16 +699,28 @@ lb.addEventListener("touchend", (e) => {
 }, { passive: true });
 lb.addEventListener("touchcancel", () => { touch = null; }, { passive: true });
 
+// Restore the loaded list and its scroll position when returning from an album.
+let listScroll = 0;
+let currentRoute = "";
+function enterPage() {
+  if (narrowScreen.matches && !matchMedia("(prefers-reduced-motion: reduce)").matches)
+    app.animate([{ opacity: .5, transform: "translateY(8px)" }, { opacity: 1, transform: "translateY(0)" }], { duration: 180, easing: "ease-out" });
+}
 // ---------- เส้นทาง ----------
 function route() {
+  if (currentRoute === "list") listScroll = window.scrollY;
   ++state.viewVersion;
   state.selecting = false; state.selected.clear();
   if (!lb.hidden) closeLightbox();
   const m = location.hash.match(/^#\/album\/(\d+)/);
-  if (m) { app.innerHTML = `<div class="empty">กำลังโหลด…</div>`; loadAlbum(Number(m[1])); }
-  else renderList();
-  closeMobileMenu(); renderSidebar();
-  window.scrollTo(0, 0);
+  const returning = !m && currentRoute === "album";
+  currentRoute = m ? "album" : "list";
+  if (m) { state.album = null; app.innerHTML = `<div class="empty">กำลังโหลด…</div>`; loadAlbum(Number(m[1])); }
+  else {
+    renderList(returning);
+  }
+  closeMobileMenu(); renderSidebar(); enterPage();
+  window.scrollTo({ top: returning ? listScroll : 0, behavior: "instant" });
 }
 window.addEventListener("hashchange", route);
 

@@ -38,6 +38,13 @@
     <main id="app" class="container" tabindex="-1"></main>
   </div>
 
+  <nav class="bottom-nav" id="bottomNav" aria-label="เมนูหลัก">
+    <a href="#/" data-tab="home"><svg aria-hidden="true"><use href="/icons.svg#image"/></svg><span>หน้าหลัก</span></a>
+    <button type="button" id="navAlbums" aria-controls="albumSidebar" aria-expanded="false"><svg aria-hidden="true"><use href="/icons.svg#folder"/></svg><span>อัลบั้ม</span></button>
+    <button type="button" id="navUpload"><svg aria-hidden="true"><use href="/icons.svg#upload"/></svg><span>อัปโหลด</span></button>
+    <button type="button" id="navAccount"><svg aria-hidden="true"><use href="/icons.svg#user"/></svg><span>บัญชี</span></button>
+  </nav>
+
   <!-- กล่องโต้ตอบ (ใช้ร่วมกัน) -->
   <dialog id="dialog"><form method="dialog" id="dialogForm"></form></dialog>
 
