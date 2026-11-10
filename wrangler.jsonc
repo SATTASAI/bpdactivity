@@ -9,6 +9,7 @@
   "limits": { "cpu_ms": 300000 },
   "triggers": { "crons": ["* * * * *"] },
   "routes": [{ "pattern": "activity.banpadengschool.ac.th", "custom_domain": true }],
+  "services": [{ "binding": "ACTIVITY_NOTIFY", "service": "school-notify", "entrypoint": "ActivityNotifications" }],
   "vars": {
     // โฟลเดอร์ "Photo" ใน Google Drive — ระบบสร้างโฟลเดอร์ย่อย "ชื่องาน (30 ต.ค. 2569)" ใต้โฟลเดอร์นี้
     "ACTIVITY_DRIVE_FOLDER_ID": "1cW8j6cDQrlS8xvl8uE3wOoaBWo48XOkZ"

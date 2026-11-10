@@ -82,6 +82,9 @@ test("ขั้นตอนครบ: ล็อกอิน สร้างง�
   assert.equal(res.status, 201);
   assert.match(data.album.folder_name, /^กีฬาสีภายใน \(\d+ .+ 25\d\d\)$/);
   const id = data.album.id;
+  const queued = sql.prepare('SELECT batch_id,photo_count FROM activity_notify_batches WHERE album_id=?').get(id);
+  assert.equal(queued.batch_id,'album:created');
+  assert.equal(queued.photo_count,0);
 
   const fd = new FormData(); fd.append("file", new File([new Uint8Array([1, 2, 3])], "a.jpg", { type: "image/jpeg" }));
   assert.equal((await call(`/api/albums/${id}/photos`, { method: "POST", body: fd, cookie: c1 })).res.status, 201);

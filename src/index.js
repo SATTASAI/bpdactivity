@@ -1,5 +1,5 @@
 import { FACEBOOK_DDL, FACEBOOK_JOBS_DDL, facebookConfig, recordFacebookPhoto, queueFacebook, facebookRoute, flushFacebook } from "./facebook.js";
-import { NOTIFY_DDL, queueUpload, flushNotifications } from "./notify.js";
+import { NOTIFY_DDL, queueAlbumCreated, queueUpload, flushNotifications } from "./notify.js";
 // ระบบภาพกิจกรรมโรงเรียนบ้านป่าเด็ง (activity.banpadengschool.ac.th)
 // - ทุกคนดูภาพได้ (สาธารณะ) · ครูล็อกอินด้วยบัญชีเดียวกับ system เพื่ออัพโหลด/แก้ไข/ลบ
 // - ภาพเก็บใน Google Drive: โฟลเดอร์ "ชื่องาน (30 ต.ค. 2569)" ใต้ ACTIVITY_DRIVE_FOLDER_ID
@@ -265,7 +265,7 @@ function cleanTitle(value) {
   return { title };
 }
 
-async function createAlbum(request, env, user) {
+async function createAlbum(request, env, user, ctx) {
   const body = await request.json().catch(() => ({}));
   const { title, error } = cleanTitle(body.title);
   if (error) return fail(error);
@@ -277,10 +277,11 @@ async function createAlbum(request, env, user) {
   const name = drive.folderName(title, eventDate);
   const folderId = await drive.createFolder(env, name);
   // ซิงก์อาจเจอโฟลเดอร์ใหม่ก่อน → อัปเดตแถวเดิมให้เป็นของผู้สร้าง
-  await env.DB.prepare(`INSERT INTO activity_albums (title, event_date, folder_name, drive_folder_id, created_by, source, audience) VALUES (?, ?, ?, ?, ?, 'web', ?)
+  await env.DB.batch([env.DB.prepare(`INSERT INTO activity_albums (title, event_date, folder_name, drive_folder_id, created_by, source, audience) VALUES (?, ?, ?, ?, ?, 'web', ?)
     ON CONFLICT(drive_folder_id) DO UPDATE SET title = excluded.title, event_date = excluded.event_date, folder_name = excluded.folder_name, created_by = excluded.created_by, source = 'web', audience = excluded.audience`)
-    .bind(title, eventDate, name, folderId, user.id, audience).run();
+    .bind(title, eventDate, name, folderId, user.id, audience), queueAlbumCreated(env, folderId, user.id)]);
   const row = await env.DB.prepare("SELECT id FROM activity_albums WHERE drive_folder_id = ?").bind(folderId).first();
+  ctx.waitUntil(flushNotifications(env));
   return json({ album: { id: row.id, title, event_date: eventDate, folder_name: name, audience } }, 201);
 }
 
@@ -663,7 +664,7 @@ async function handleApi(request, env, ctx, url, path, method, user) {
     if(method==="POST"&&response.ok)ctx.waitUntil(flushFacebook(env));
     return response;
   }
-  if (path === "/api/albums" && method === "POST") return createAlbum(request, env, user);
+  if (path === "/api/albums" && method === "POST") return createAlbum(request, env, user, ctx);
   if (path === "/api/albums/audience" && method === "POST") return bulkAudience(request, env, user, ctx);
   if (albumMatch && method === "PATCH") return updateAlbum(request, env, user, Number(albumMatch[1]), ctx);
   if (albumMatch && method === "DELETE") return deleteAlbum(env, user, Number(albumMatch[1]), ctx);
