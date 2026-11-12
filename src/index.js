@@ -577,6 +577,62 @@ async function serveImage(request, env, ctx, id, size) {
   return response;
 }
 
+// ---------- ภาพตัวอย่างเมื่อแชร์ลิงก์ (Open Graph) ----------
+// Facebook ไม่รัน JS และตัด #... ทิ้ง → ลิงก์อัลบั้มใช้ /album/:id แล้วใส่ meta ฝั่งเซิร์ฟเวอร์
+const SITE_NAME = "ภาพกิจกรรม · โรงเรียนบ้านป่าเด็ง";
+const escAttr = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+async function shareMeta(env, origin, albumId) {
+  const meta = { title: SITE_NAME, description: "ภาพกิจกรรมโรงเรียนบ้านป่าเด็ง", url: `${origin}/`, image: null };
+  try {
+    await ensureSchema(env);
+    if (albumId) {
+      // ภาพปกที่ตั้งไว้ ถ้าไม่มีใช้ภาพแรกของอัลบั้ม (เฉพาะอัลบั้มสาธารณะ)
+      const a = await env.DB.prepare(`SELECT a.id, a.title, a.event_date, a.description,
+        COALESCE((SELECT p.id FROM activity_photos p WHERE p.id = a.cover_photo_id AND p.album_id = a.id AND p.deleted_at IS NULL),
+          (SELECT p.id FROM activity_photos p WHERE p.album_id = a.id AND p.deleted_at IS NULL ORDER BY p.id LIMIT 1)) AS cover_id,
+        (SELECT COUNT(*) FROM activity_photos p WHERE p.album_id = a.id AND p.deleted_at IS NULL) AS photo_count
+        FROM activity_albums a WHERE a.id = ? AND a.deleted_at IS NULL AND COALESCE(a.audience, 'public') = 'public'`).bind(albumId).first();
+      if (a) {
+        meta.title = `${a.title} · ${SITE_NAME}`;
+        const when = a.event_date ? drive.thaiDateLabel(a.event_date) : "";
+        meta.description = String(a.description || "").trim().slice(0, 200) || [when, a.photo_count ? `${a.photo_count} ภาพ` : ""].filter(Boolean).join(" · ") || meta.description;
+        meta.url = `${origin}/album/${a.id}`;
+        if (a.cover_id) meta.image = `${origin}/img/${a.cover_id}/thumb`;
+      }
+    } else {
+      // หน้าแรก: ภาพปกของอัลบั้มสาธารณะล่าสุด
+      const a = await env.DB.prepare(`SELECT COALESCE((SELECT p.id FROM activity_photos p WHERE p.id = a.cover_photo_id AND p.album_id = a.id AND p.deleted_at IS NULL),
+          (SELECT p.id FROM activity_photos p WHERE p.album_id = a.id AND p.deleted_at IS NULL ORDER BY p.id LIMIT 1)) AS cover_id
+        FROM activity_albums a WHERE a.deleted_at IS NULL AND COALESCE(a.audience, 'public') = 'public'
+          AND EXISTS (SELECT 1 FROM activity_photos p WHERE p.album_id = a.id AND p.deleted_at IS NULL)
+        ORDER BY a.event_date DESC, a.id DESC LIMIT 1`).first();
+      if (a?.cover_id) meta.image = `${origin}/img/${a.cover_id}/thumb`;
+    }
+  } catch {}
+  return meta;
+}
+
+async function sharePage(request, env, albumId) {
+  const origin = new URL(request.url).origin;
+  const res = await env.ASSETS.fetch(new Request(`${origin}/`, request));
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers.set(k, v);
+  if (!res.ok || !(res.headers.get("Content-Type") || "").includes("text/html")) return new Response(res.body, { status: res.status, headers });
+  const m = await shareMeta(env, origin, albumId);
+  const tags = [
+    ["og:type", "website"], ["og:site_name", SITE_NAME], ["og:title", m.title], ["og:description", m.description], ["og:url", m.url],
+    ...(m.image ? [["og:image", m.image], ["og:image:alt", m.title]] : []),
+  ].map(([k, v]) => `<meta property="${k}" content="${escAttr(v)}">`);
+  tags.push(`<meta name="twitter:card" content="${m.image ? "summary_large_image" : "summary"}">`);
+  let html = await res.text();
+  html = html.replace(/<title>[^<]*<\/title>/, `<title>${escAttr(m.title)}</title>`)
+    .replace(/<meta name="description"[^>]*>/, `<meta name="description" content="${escAttr(m.description)}">`)
+    .replace("</head>", `${tags.join("\n")}\n</head>`);
+  headers.delete("Content-Length"); headers.delete("ETag");
+  return new Response(html, { status: 200, headers });
+}
+
 // ---------- router ----------
 function sameOrigin(request) {
   const origin = request.headers.get("Origin");
@@ -596,6 +652,11 @@ async function handle(request, env, ctx) {
   if (zip && method === "GET") { await ensureSchema(env); return downloadZip(env, Number(zip[1]), Number(zip[2]), await currentUser(request, env)); }
 
   if (path === "/sso" && method === "GET") { await ensureSchema(env); return ssoLogin(url, env); }
+
+  const shareAlbum = path.match(/^\/album\/(\d+)\/?$/);
+  if (method === "GET" && (shareAlbum || path === "/" || path === "/index.html")) {
+    return sharePage(request, env, shareAlbum ? Number(shareAlbum[1]) : null);
+  }
 
   if (!path.startsWith("/api/")) {
     const res = await env.ASSETS.fetch(request);
