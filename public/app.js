@@ -175,7 +175,7 @@ function accountDialog() {
 $("#navAccount").onclick = () => { closeMobileMenu(); accountDialog(); };
 $("[data-tab=home]").onclick = () => {
   closeMobileMenu();
-  if (!/^#\/album\//.test(location.hash)) window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+  if (!routeAlbumId()) window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
 };
 $("#navUpload").onclick = () => { closeMobileMenu(); quickUploadDialog(); };
 $("#navAlbums").onclick = () => $("#mobileMenu").click();
@@ -197,8 +197,8 @@ function updateSidebarLayout() {
   $("#mobileMenu").setAttribute("aria-expanded", String(mobileOpen && narrowScreen.matches));
   $("#navAlbums").setAttribute("aria-expanded", String(mobileOpen && narrowScreen.matches));
   $("#navAlbums").classList.toggle("active", mobileOpen && narrowScreen.matches);
-  $("[data-tab=home]").classList.toggle("active", !mobileOpen && !/^#\/album\//.test(location.hash));
-  if (!/^#\/album\//.test(location.hash)) $("[data-tab=home]").setAttribute("aria-current", "page");
+  $("[data-tab=home]").classList.toggle("active", !mobileOpen && !routeAlbumId());
+  if (!routeAlbumId()) $("[data-tab=home]").setAttribute("aria-current", "page");
   else $("[data-tab=home]").removeAttribute("aria-current");
   const expanded = narrowScreen.matches ? mobileOpen : !collapsed;
   $("#sidebarToggle").setAttribute("aria-expanded", String(expanded));
@@ -233,7 +233,7 @@ updateSidebarLayout();
 
 function renderSidebar() {
   const { albums, hasMore, loading } = state.sidebar;
-  const selected = location.hash.match(/^#\/album\/(\d+)$/)?.[1];
+  const selected = routeAlbumId();
   const all = $(".nav-all");
   all.classList.toggle("selected", !selected);
   if (!selected) all.setAttribute("aria-current", "page"); else all.removeAttribute("aria-current");
@@ -754,12 +754,27 @@ function enterPage() {
     app.animate([{ opacity: .5, transform: "translateY(8px)" }, { opacity: 1, transform: "translateY(0)" }], { duration: 180, easing: "ease-out" });
 }
 // ---------- เส้นทาง ----------
+// ลิงก์ที่คัดลอกจากแถบที่อยู่เป็น /album/:id (แชร์ลง Facebook แล้วมีภาพตัวอย่าง) — ลิงก์ภายในยังใช้ #/album/:id
+function routeAlbumId() {
+  if (location.hash && location.hash !== "#") return location.hash.match(/^#\/album\/(\d+)/)?.[1] || null;
+  return location.pathname.match(/^\/album\/(\d+)\/?$/)?.[1] || null;
+}
+function normalizeUrl() {
+  const id = routeAlbumId();
+  const clean = id ? `/album/${id}` : "/";
+  if (location.pathname + location.search + location.hash !== clean) history.replaceState(history.state, "", clean);
+  return clean;
+}
+let lastRouteKey = null;
+function onNavigate() { if (normalizeUrl() !== lastRouteKey) route(); }
 function route() {
+  lastRouteKey = normalizeUrl();
+  const albumId = routeAlbumId();
   if (currentRoute === "list") listScroll = window.scrollY;
   ++state.viewVersion;
   state.selecting = false; state.selected.clear();
   if (!lb.hidden) closeLightbox();
-  const m = location.hash.match(/^#\/album\/(\d+)/);
+  const m = albumId ? [null, albumId] : null;
   const returning = !m && currentRoute === "album";
   currentRoute = m ? "album" : "list";
   if (m) { state.album = null; app.innerHTML = `<div class="empty">กำลังโหลด…</div>`; loadAlbum(Number(m[1])); }
@@ -769,7 +784,8 @@ function route() {
   closeMobileMenu(); renderSidebar(); enterPage();
   window.scrollTo({ top: returning ? listScroll : 0, behavior: "instant" });
 }
-window.addEventListener("hashchange", route);
+window.addEventListener("hashchange", onNavigate);
+window.addEventListener("popstate", onNavigate);
 
 (async () => {
   try { state.user = (await api("/api/me")).user; } catch {}

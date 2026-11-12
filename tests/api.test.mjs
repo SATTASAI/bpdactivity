@@ -355,3 +355,26 @@ test('Facebook uploads record only selected files, publish after completion, and
     const status=await call(`/api/albums/${id}/facebook`,{cookie});assert.equal(status.data.jobs[0].status,'published');assert.equal(status.data.jobs[0].url,'https://www.facebook.com/123_456');
   }finally{globalThis.fetch=originalFetch;delete env.FACEBOOK_PAGE_ID;delete env.FACEBOOK_PAGE_ACCESS_TOKEN;}
 });
+
+test("ลิงก์ /album/:id ใส่ภาพตัวอย่าง Open Graph (ภาพปก ถ้าไม่มีใช้ภาพแรก) เฉพาะอัลบั้มสาธารณะ", async () => {
+  const html = `<!doctype html><html><head><title>x</title><meta name="description" content="d"></head><body></body></html>`;
+  const assets = env.ASSETS;
+  env.ASSETS = { fetch: async () => new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } }) };
+  try {
+    await ensureSchema(env);
+    sql.exec(`INSERT INTO activity_albums (id, title, event_date, folder_name, drive_folder_id, created_by, audience) VALUES (901, 'กีฬาสี "สนุก"', '2026-10-30', 'og', 'fOG', 1, 'public'), (902, 'ลับ', '2026-10-31', 'og2', 'fOG2', 1, 'staff');
+      INSERT INTO activity_photos (id, album_id, drive_file_id, file_name, mime_type, uploaded_by) VALUES (9001, 901, 'og1', 'a.jpg', 'image/jpeg', 1), (9002, 901, 'og2', 'b.jpg', 'image/jpeg', 1), (9003, 902, 'og3', 'c.jpg', 'image/jpeg', 1);`);
+    let { res, data } = await call("/album/901");
+    assert.equal(res.status, 200);
+    assert.match(data, /<meta property="og:image" content="https:\/\/activity\.test\/img\/9001\/thumb">/);
+    assert.match(data, /<meta property="og:url" content="https:\/\/activity\.test\/album\/901">/);
+    assert.match(data, /<title>กีฬาสี &quot;สนุก&quot; · /);
+    sql.exec("UPDATE activity_albums SET cover_photo_id = 9002 WHERE id = 901");
+    ({ data } = await call("/album/901"));
+    assert.match(data, /img\/9002\/thumb/);
+    ({ data } = await call("/album/902"));
+    assert.doesNotMatch(data, /og:image|ลับ/);
+    ({ data } = await call("/"));
+    assert.match(data, /<meta property="og:image" content="https:\/\/activity\.test\/img\/\d+\/thumb">/);
+  } finally { env.ASSETS = assets; }
+});
