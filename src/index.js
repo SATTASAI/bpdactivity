@@ -332,7 +332,7 @@ async function updateAlbum(request, env, user, id, ctx) {
 async function deleteAlbum(env, user, id, ctx) {
   const album = await getAlbum(env, id);
   if (!album) return fail("ไม่พบงานนี้", 404);
-  if (!canManageAlbum(user, album)) return fail("ลบได้เฉพาะผู้สร้างงานหรือผู้ดูแลระบบ", 403);
+  if (!user.is_admin) return fail("ลบงานได้เฉพาะผู้ดูแลระบบ", 403);
   await drive.trashFile(env, album.drive_folder_id); // โฟลเดอร์ทั้งชุดไปถังขยะ Drive (กู้คืนได้ 30 วัน)
   const photos = await env.DB.prepare("SELECT id FROM activity_photos WHERE album_id = ? AND deleted_at IS NULL").bind(id).all();
   await env.DB.batch([
