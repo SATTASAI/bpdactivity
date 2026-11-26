@@ -1,5 +1,5 @@
 import { FACEBOOK_DDL, FACEBOOK_JOBS_DDL, facebookConfig, recordFacebookPhoto, queueFacebook, facebookRoute, flushFacebook } from "./facebook.js";
-import { NOTIFY_DDL, queueAlbumCreated, queueUpload, flushNotifications } from "./notify.js";
+import { NOTIFY_DDL, queueAlbumCreated, flushNotifications } from "./notify.js";
 // ระบบภาพกิจกรรมโรงเรียนบ้านป่าเด็ง (activity.banpadengschool.ac.th)
 // - ทุกคนดูภาพได้ (สาธารณะ) · ครูล็อกอินด้วยบัญชีเดียวกับ system เพื่ออัพโหลด/แก้ไข/ลบ
 // - ภาพเก็บใน Google Drive: โฟลเดอร์ "ชื่องาน (30 ต.ค. 2569)" ใต้ ACTIVITY_DRIVE_FOLDER_ID
@@ -377,7 +377,6 @@ async function uploadPhoto(request, env, user, albumId) {
   const row = await env.DB.prepare("SELECT id FROM activity_photos WHERE drive_file_id = ?").bind(uploaded.id).first();
   await env.DB.batch([
     env.DB.prepare("UPDATE activity_albums SET updated_at = datetime('now') WHERE id = ?").bind(albumId),
-    queueUpload(env, albumId, user.id, batchId),
     ...(facebookSelected ? [recordFacebookPhoto(env, albumId, user.id, batchId, row.id)] : []),
   ]);
   return json({ photo: { id: row.id, file_name: name } }, 201);
@@ -734,11 +733,9 @@ async function handleApi(request, env, ctx, url, path, method, user) {
     const body = await request.json().catch(() => ({}));
     const batchId = String(body.batch_id || "");
     if (!/^[a-zA-Z0-9-]{1,80}$/.test(batchId)) return fail("รหัสชุดอัปโหลดไม่ถูกต้อง");
-    await env.DB.prepare(`UPDATE activity_notify_batches SET ready_at=? WHERE album_id=? AND user_id=? AND batch_id=? AND sent_at IS NULL`)
-      .bind(Date.now(),Number(complete[1]),user.id,batchId).run();
     const album=await getAlbum(env,Number(complete[1]));
     const facebook=album?await queueFacebook(env,user,album,batchId,body.facebook):{status:"blocked",error:"ไม่พบอัลบั้ม"};
-    ctx.waitUntil(Promise.all([flushNotifications(env),flushFacebook(env)]));
+    ctx.waitUntil(flushFacebook(env));
     return json({ ok:true,facebook });
   }
   const upload = path.match(/^\/api\/albums\/(\d+)\/photos$/);
