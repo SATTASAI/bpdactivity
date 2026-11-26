@@ -455,7 +455,7 @@ function renderAlbum() {
         ${selectable.length ? `<button class="btn ghost sm${state.selecting ? " on" : ""}" id="selectMode">${ICON.select} ${state.selecting ? "เลิกเลือก" : "เลือกภาพ"}</button>` : ""}
         ${manage ? `<select id="audQuick" class="aud-filter sm" aria-label="ผู้ที่มองเห็นอัลบั้มนี้" title="ผู้ที่มองเห็น (Audience)">${Object.entries(AUDIENCE_SHORT)
           .map(([k, v]) => `<option value="${k}"${k === (a.audience || "public") ? " selected" : ""}>👁 ${v}</option>`).join("")}</select>` : ""}
-        ${manage ? `<button class="btn ghost sm" id="editAlbum">${ICON.edit} แก้ไขอัลบั้ม</button><button class="btn danger sm" id="delAlbum">${ICON.trash} ลบงาน</button>` : ""}
+        ${manage ? `<button class="btn ghost sm" id="editAlbum">${ICON.edit} แก้ไขอัลบั้ม</button>${isAdmin() ? `<button class="btn danger sm" id="delAlbum">${ICON.trash} ลบงาน</button>` : ""}` : ""}
       </div>
     </section>
     ${state.selecting ? `<div class="select-bar" role="toolbar" aria-label="จัดการภาพที่เลือก">
@@ -500,7 +500,7 @@ function renderAlbum() {
       catch (x) { e.target.value = a.audience || "public"; toast(x.message, true); }
     };
     $("#editAlbum").onclick = () => albumDialog(a);
-    $("#delAlbum").onclick = async () => {
+    if ($("#delAlbum")) $("#delAlbum").onclick = async () => {
       if (!await confirmBox("ลบงานนี้?", `ภาพทั้งหมด ${state.photos.length} ภาพและโฟลเดอร์ใน Drive จะถูกย้ายไปถังขยะ (กู้คืนใน Drive ได้ภายใน 30 วัน)`, "ลบงาน")) return;
       try { await api(`/api/albums/${a.id}`, { method: "DELETE" }); toast("ลบงานแล้ว"); loadSidebar(); location.hash = "#/"; }
       catch (x) { toast(x.message, true); }
